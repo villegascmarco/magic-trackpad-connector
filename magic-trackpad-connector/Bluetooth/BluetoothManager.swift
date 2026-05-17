@@ -15,7 +15,7 @@ final class BluetoothManager: @unchecked Sendable {
     nonisolated func connect(mac: String) throws {
         var lastError: Error?
         for attempt in 0..<5 {
-            if attempt > 0 { Thread.sleep(forTimeInterval: 1.0) }
+            if attempt > 0 { Thread.sleep(forTimeInterval: 1.5) }
             NSLog("[BT] connect attempt \(attempt + 1)/5 for \(mac)")
             do {
                 try run(args: ["--connect", mac])

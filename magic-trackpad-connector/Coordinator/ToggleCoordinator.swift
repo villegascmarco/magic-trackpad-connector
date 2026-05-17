@@ -131,10 +131,18 @@ final class ToggleCoordinator {
             return
         }
 
-        // Give the Bluetooth stack time to fully release the device before
-        // the peer attempts to claim it.
-        NSLog("[Coordinator] disconnected locally, waiting for BT stack to settle")
-        try? await Task.sleep(for: .milliseconds(1500))
+        // blueutil --disconnect returns before the BT hardware has fully torn down
+        // the link. Poll isConnected until the device is genuinely gone, then add a
+        // small extra buffer so Mac B doesn't race with the link teardown.
+        NSLog("[Coordinator] disconnect issued, polling until device is fully released")
+        for attempt in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(300))
+            if !(await checkIsConnected(mac: mac)) {
+                NSLog("[Coordinator] device released after \((attempt + 1) * 300)ms")
+                break
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(500))
 
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
