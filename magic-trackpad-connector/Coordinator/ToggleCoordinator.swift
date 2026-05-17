@@ -31,6 +31,25 @@ final class ToggleCoordinator {
     func connectOnLaunch() async {
         let mac = settings.trackpadMAC
         guard !mac.isEmpty else { return }
+
+        // Check if already connected here — nothing to do
+        let alreadyHere = await checkIsConnected(mac: mac)
+        if alreadyHere {
+            await refreshConnectionStatus()
+            return
+        }
+
+        // Wait briefly for Bonjour to discover the peer
+        try? await Task.sleep(for: .seconds(2))
+
+        // Don't steal the trackpad if the peer is online — it might be using it
+        // Let the user decide via the menu bar
+        if bonjourService.peerEndpoint != nil {
+            await refreshConnectionStatus()
+            return
+        }
+
+        // Peer is offline: trackpad is floating, safe to connect locally
         let bt = bluetooth
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             btQueue.async {

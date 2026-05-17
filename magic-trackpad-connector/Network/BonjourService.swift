@@ -1,6 +1,7 @@
 import Foundation
 import Network
 
+@Observable
 @MainActor
 final class BonjourService {
     private let settings: AppSettings
