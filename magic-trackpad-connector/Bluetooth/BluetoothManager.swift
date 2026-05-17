@@ -13,27 +13,19 @@ final class BluetoothManager: @unchecked Sendable {
     }
 
     nonisolated func connect(mac: String) throws {
-        var lastError: Error?
-        for attempt in 0..<5 {
-            if attempt > 0 { Thread.sleep(forTimeInterval: 1.5) }
-            NSLog("[BT] connect attempt \(attempt + 1)/5 for \(mac)")
-            do {
-                try run(args: ["--connect", mac])
-                NSLog("[BT] connect succeeded (blueutil exit 0)")
-                return
-            } catch {
-                lastError = error
-                NSLog("[BT] connect attempt failed: \(error.localizedDescription)")
-                // blueutil sometimes exits non-zero even though the connection
-                // went through — check the actual state before retrying.
-                if isConnected(mac: mac) {
-                    NSLog("[BT] isConnected=true despite non-zero exit — treating as success")
-                    return
-                }
-            }
-        }
-        NSLog("[BT] all connect attempts exhausted")
-        throw lastError!
+        NSLog("[BT] connect \(mac)")
+        // Initiate a single connection request, then block until the BT stack
+        // confirms the link is up (up to 10s). --wait-connect avoids hammering
+        // the device with repeated requests, which triggers its per-host backoff.
+        try? run(args: ["--connect", mac])           // ok if this exits non-zero
+        try run(args: ["--wait-connect", mac, "10"]) // throws on timeout
+        NSLog("[BT] connect confirmed")
+    }
+
+    nonisolated func waitForDisconnect(mac: String, timeout: Int = 6) {
+        NSLog("[BT] waiting for \(mac) to fully disconnect (max \(timeout)s)")
+        try? run(args: ["--wait-disconnect", mac, "\(timeout)"])
+        NSLog("[BT] disconnect confirmed")
     }
 
     nonisolated func disconnect(mac: String) throws {

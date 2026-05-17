@@ -96,9 +96,11 @@ final class PeerServer: @unchecked Sendable {
                 try bluetooth.connect(mac: mac)
                 DispatchQueue.main.async { [weak self] in self?.onClaimRequested?() }
             case "disconnect":
-                // Treat "already disconnected" as success — blueutil may return non-zero
-                // when the device isn't connected, but that outcome is fine for our use case.
+                // Graceful disconnect: blueutil may return non-zero if already disconnected.
                 try? bluetooth.disconnect(mac: mac)
+                // Block until the device is truly gone before sending "ok" — prevents the
+                // receiver from attempting to connect while the BT link is still up.
+                bluetooth.waitForDisconnect(mac: mac, timeout: 6)
                 DispatchQueue.main.async { [weak self] in self?.onReleaseRequested?() }
             case "status":
                 let connected = bluetooth.isConnected(mac: mac)
