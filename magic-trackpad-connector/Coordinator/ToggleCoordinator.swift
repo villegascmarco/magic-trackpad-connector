@@ -133,7 +133,8 @@ final class ToggleCoordinator {
 
         // Give the Bluetooth stack time to fully release the device before
         // the peer attempts to claim it.
-        try? await Task.sleep(for: .milliseconds(800))
+        NSLog("[Coordinator] disconnected locally, waiting for BT stack to settle")
+        try? await Task.sleep(for: .milliseconds(1500))
 
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
@@ -150,13 +151,14 @@ final class ToggleCoordinator {
         // Tell the peer to release the trackpad.
         do {
             _ = try await sendCommandToPeer(action: "disconnect", endpoint: peerEndpoint)
+            NSLog("[Coordinator] peer released trackpad, waiting for BT stack to settle")
         } catch {
             showError("Could not disconnect trackpad on the other Mac:\n\(error.localizedDescription)\n\nNo changes were made.")
             return
         }
 
-        // Give the Bluetooth stack time to fully release the device.
-        try? await Task.sleep(for: .milliseconds(800))
+        // Magic Trackpad can take up to ~1.5s to start advertising after disconnect.
+        try? await Task.sleep(for: .milliseconds(1500))
 
         let bt = bluetooth
         let success = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
@@ -165,12 +167,13 @@ final class ToggleCoordinator {
                     try bt.connect(mac: mac)
                     continuation.resume(returning: true)
                 } catch {
+                    NSLog("[Coordinator] local connect failed after peer release: \(error.localizedDescription)")
                     continuation.resume(returning: false)
                 }
             }
         }
         if !success {
-            showError("The trackpad was released by the other Mac but this Mac could not connect.\nTry again in a moment.")
+            showError("The trackpad was released by the other Mac but this Mac could not connect.\nMake sure the trackpad is charged and in range, then try again.")
         }
     }
 

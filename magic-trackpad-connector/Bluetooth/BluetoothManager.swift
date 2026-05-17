@@ -13,18 +13,31 @@ final class BluetoothManager: @unchecked Sendable {
     }
 
     nonisolated func connect(mac: String) throws {
-        // Retry up to 3 times: the device may need a moment to become
-        // connectable after being released by the other host.
         var lastError: Error?
-        for attempt in 0..<3 {
-            if attempt > 0 { Thread.sleep(forTimeInterval: 0.6) }
-            do { try run(args: ["--connect", mac]); return }
-            catch { lastError = error }
+        for attempt in 0..<5 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 1.0) }
+            NSLog("[BT] connect attempt \(attempt + 1)/5 for \(mac)")
+            do {
+                try run(args: ["--connect", mac])
+                NSLog("[BT] connect succeeded (blueutil exit 0)")
+                return
+            } catch {
+                lastError = error
+                NSLog("[BT] connect attempt failed: \(error.localizedDescription)")
+                // blueutil sometimes exits non-zero even though the connection
+                // went through — check the actual state before retrying.
+                if isConnected(mac: mac) {
+                    NSLog("[BT] isConnected=true despite non-zero exit — treating as success")
+                    return
+                }
+            }
         }
+        NSLog("[BT] all connect attempts exhausted")
         throw lastError!
     }
 
     nonisolated func disconnect(mac: String) throws {
+        NSLog("[BT] disconnect \(mac)")
         try run(args: ["--disconnect", mac])
     }
 
@@ -58,11 +71,17 @@ final class BluetoothManager: @unchecked Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
-        process.standardError = Pipe()
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
         try process.run()
         process.waitUntilExit()
         let status = process.terminationStatus
-        if status != 0 { throw BTError.commandFailed(status) }
+        if status != 0 {
+            let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            NSLog("[BT] blueutil \(args.joined(separator: " ")) → exit \(status): \(errMsg)")
+            throw BTError.commandFailed(status, errMsg)
+        }
         return status
     }
 
@@ -83,14 +102,16 @@ final class BluetoothManager: @unchecked Sendable {
 
 enum BTError: LocalizedError {
     case blueutilNotFound
-    case commandFailed(Int32)
+    case commandFailed(Int32, String)
 
     var errorDescription: String? {
         switch self {
         case .blueutilNotFound:
             return "blueutil not found. Install it with: brew install blueutil"
-        case .commandFailed(let code):
-            return "blueutil command failed (exit code \(code))"
+        case .commandFailed(let code, let msg):
+            return msg.isEmpty
+                ? "blueutil command failed (exit \(code))"
+                : "blueutil command failed (exit \(code)): \(msg)"
         }
     }
 }
