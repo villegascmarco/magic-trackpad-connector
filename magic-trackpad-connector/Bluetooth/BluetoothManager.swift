@@ -25,6 +25,11 @@ final class BluetoothManager: @unchecked Sendable {
         return output.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
     }
 
+    nonisolated func findMagicTrackpad() throws -> (mac: String, name: String)? {
+        let devices = try pairedDevices()
+        return devices.first { $0.name.localizedCaseInsensitiveContains("trackpad") }
+    }
+
     nonisolated func pairedDevices() throws -> [(mac: String, name: String)] {
         let output = try runOutput(args: ["--paired", "--format", "json"])
         guard let data = output.data(using: .utf8),

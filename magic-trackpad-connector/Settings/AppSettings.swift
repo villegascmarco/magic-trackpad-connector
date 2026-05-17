@@ -10,6 +10,10 @@ final class AppSettings {
         didSet { defaults.set(trackpadMAC, forKey: "trackpadMAC") }
     }
 
+    var trackpadName: String {
+        didSet { defaults.set(trackpadName, forKey: "trackpadName") }
+    }
+
     var thisMachineName: String {
         didSet { defaults.set(thisMachineName, forKey: "thisMachineName") }
     }
@@ -18,8 +22,11 @@ final class AppSettings {
         didSet { defaults.set(serverPort, forKey: "serverPort") }
     }
 
+    var isTrackpadConfigured: Bool { !trackpadMAC.isEmpty }
+
     private init() {
         trackpadMAC = defaults.string(forKey: "trackpadMAC") ?? ""
+        trackpadName = defaults.string(forKey: "trackpadName") ?? ""
         thisMachineName = defaults.string(forKey: "thisMachineName")
             ?? Host.current().localizedName
             ?? ProcessInfo.processInfo.hostName

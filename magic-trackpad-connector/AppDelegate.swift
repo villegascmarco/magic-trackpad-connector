@@ -31,9 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         Task {
+            await autoDetectTrackpadIfNeeded(settings: settings, bluetooth: bluetooth)
             await coordinator.connectOnLaunch()
             statusBarController.updateIcon()
         }
+    }
+
+    private func autoDetectTrackpadIfNeeded(settings: AppSettings, bluetooth: BluetoothManager) async {
+        guard !settings.isTrackpadConfigured else { return }
+        let task = Task.detached(priority: .userInitiated) { try bluetooth.findMagicTrackpad() }
+        guard let trackpad = try? await task.value else { return }
+        settings.trackpadMAC = trackpad.mac
+        settings.trackpadName = trackpad.name
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
