@@ -13,11 +13,88 @@ final class ToggleCoordinator {
 
     private var pollingTimer: Timer?
 
+    // Release mode: this Mac yielded the trackpad — fight off macOS auto-reconnect.
+    private var releaseUntil: Date = .distantPast
+    private var releaseModeTask: Task<Void, Never>?
+
+    // Claim mode: this Mac received the trackpad — reconnect if the other Mac steals it back.
+    private var claimUntil: Date = .distantPast
+    private var claimModeTask: Task<Void, Never>?
+
     init(settings: AppSettings, bluetooth: BluetoothManager, bonjourService: BonjourService) {
         self.settings = settings
         self.bluetooth = bluetooth
         self.bonjourService = bonjourService
     }
+
+    // MARK: - Release / Claim modes
+
+    func enterReleaseMode(duration: TimeInterval = 30) {
+        exitClaimMode()
+        releaseUntil = Date().addingTimeInterval(duration)
+        NSLog("[Coordinator] release mode ON for \(Int(duration))s")
+        releaseModeTask?.cancel()
+        releaseModeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let mac = self.settings.trackpadMAC
+            guard !mac.isEmpty else { return }
+            while !Task.isCancelled, Date() < self.releaseUntil {
+                try? await Task.sleep(for: .milliseconds(2000))
+                guard !Task.isCancelled, Date() < self.releaseUntil else { break }
+                let connected = await self.checkIsConnected(mac: mac)
+                if connected {
+                    NSLog("[Coordinator] release mode: disconnecting macOS auto-reconnect")
+                    let bt = self.bluetooth
+                    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                        self.btQueue.async { try? bt.disconnect(mac: mac); c.resume() }
+                    }
+                    self.isTrackpadConnected = false
+                    self.onStatusChanged?()
+                }
+            }
+            NSLog("[Coordinator] release mode OFF")
+        }
+    }
+
+    func enterClaimMode(duration: TimeInterval = 30) {
+        exitReleaseMode()
+        claimUntil = Date().addingTimeInterval(duration)
+        NSLog("[Coordinator] claim mode ON for \(Int(duration))s")
+        claimModeTask?.cancel()
+        claimModeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let mac = self.settings.trackpadMAC
+            guard !mac.isEmpty else { return }
+            while !Task.isCancelled, Date() < self.claimUntil {
+                try? await Task.sleep(for: .milliseconds(2000))
+                guard !Task.isCancelled, Date() < self.claimUntil else { break }
+                let connected = await self.checkIsConnected(mac: mac)
+                if !connected {
+                    NSLog("[Coordinator] claim mode: reconnecting (stolen back by other Mac)")
+                    let bt = self.bluetooth
+                    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                        self.btQueue.async { try? bt.connect(mac: mac); c.resume() }
+                    }
+                    await self.refreshConnectionStatus()
+                }
+            }
+            NSLog("[Coordinator] claim mode OFF")
+        }
+    }
+
+    private func exitReleaseMode() {
+        releaseUntil = .distantPast
+        releaseModeTask?.cancel()
+        releaseModeTask = nil
+    }
+
+    private func exitClaimMode() {
+        claimUntil = .distantPast
+        claimModeTask?.cancel()
+        claimModeTask = nil
+    }
+
+    // MARK: - Lifecycle
 
     func startPolling() {
         pollingTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -59,6 +136,8 @@ final class ToggleCoordinator {
         await refreshConnectionStatus()
     }
 
+    // MARK: - Toggle
+
     func toggle() async {
         let mac = settings.trackpadMAC
         guard !mac.isEmpty else {
@@ -95,6 +174,9 @@ final class ToggleCoordinator {
     }
 
     private func connectLocally(mac: String) async {
+        // User explicitly requesting local connect — cancel any active mode.
+        exitReleaseMode()
+        exitClaimMode()
         let bt = bluetooth
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             btQueue.async {
@@ -103,6 +185,8 @@ final class ToggleCoordinator {
             }
         }
     }
+
+    // MARK: - Transfer helpers
 
     private func sendTrackpadToPeer(mac: String, peerEndpoint: NWEndpoint) async {
         // Pre-flight: verify peer is reachable AND ready to receive before
@@ -146,6 +230,8 @@ final class ToggleCoordinator {
 
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
+            // Enter release mode: macOS will try to auto-reconnect here; keep fighting it off.
+            enterReleaseMode()
         } catch {
             // Rollback: reconnect locally so the trackpad isn't stranded.
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -180,10 +266,15 @@ final class ToggleCoordinator {
                 }
             }
         }
-        if !success {
+        if success {
+            // Enter claim mode: the peer's macOS may steal the trackpad back; keep reclaiming.
+            enterClaimMode()
+        } else {
             showError("The trackpad was released by the other Mac but this Mac could not connect.\nMake sure the trackpad is charged and in range, then try again.")
         }
     }
+
+    // MARK: - Internal helpers
 
     private func checkIsConnected(mac: String) async -> Bool {
         let bt = bluetooth

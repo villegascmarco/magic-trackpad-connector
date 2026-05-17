@@ -7,6 +7,14 @@ final class PeerServer: @unchecked Sendable {
     private var listener: NWListener?
     private let btQueue = DispatchQueue(label: "btmanager", qos: .userInitiated)
 
+    /// Called on main thread after a "disconnect" command is executed.
+    /// The coordinator uses this to enter release mode (fight off macOS auto-reconnect).
+    var onReleaseRequested: (() -> Void)?
+
+    /// Called on main thread after a "connect" command succeeds.
+    /// The coordinator uses this to enter claim mode (fight back if the device is stolen).
+    var onClaimRequested: (() -> Void)?
+
     init(settings: AppSettings, bluetooth: BluetoothManager) {
         self.settings = settings
         self.bluetooth = bluetooth
@@ -86,10 +94,12 @@ final class PeerServer: @unchecked Sendable {
             switch command.action {
             case "connect":
                 try bluetooth.connect(mac: mac)
+                DispatchQueue.main.async { [weak self] in self?.onClaimRequested?() }
             case "disconnect":
                 // Treat "already disconnected" as success — blueutil may return non-zero
                 // when the device isn't connected, but that outcome is fine for our use case.
                 try? bluetooth.disconnect(mac: mac)
+                DispatchQueue.main.async { [weak self] in self?.onReleaseRequested?() }
             case "status":
                 let connected = bluetooth.isConnected(mac: mac)
                 return PeerResponse(status: "ok", message: connected ? "connected" : "disconnected")

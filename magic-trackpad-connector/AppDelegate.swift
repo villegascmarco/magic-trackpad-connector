@@ -30,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             coordinator: coordinator
         )
 
+        peerServer.onReleaseRequested = { [weak coordinator] in
+            Task { @MainActor in coordinator?.enterReleaseMode() }
+        }
+        peerServer.onClaimRequested = { [weak coordinator] in
+            Task { @MainActor in coordinator?.enterClaimMode() }
+        }
+
         Task {
             await autoDetectTrackpadIfNeeded(settings: settings, bluetooth: bluetooth)
             await coordinator.connectOnLaunch()
