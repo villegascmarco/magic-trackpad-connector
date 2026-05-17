@@ -106,18 +106,41 @@ final class ToggleCoordinator {
     }
 
     private func sendTrackpadToPeer(mac: String, peerEndpoint: NWEndpoint) async {
+        // Verify peer is reachable before touching anything
+        do {
+            _ = try await sendCommandToPeer(action: "status", endpoint: peerEndpoint)
+        } catch {
+            showError("Cannot reach the other Mac:\n\(error.localizedDescription)\n\nNo changes were made.")
+            return
+        }
+
+        // Disconnect locally FIRST — Bluetooth only allows one host at a time,
+        // so the peer cannot connect while we still hold the connection.
+        let bt = bluetooth
+        let disconnected = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            btQueue.async {
+                do {
+                    try bt.disconnect(mac: mac)
+                    continuation.resume(returning: true)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+        guard disconnected else {
+            showError("Could not disconnect trackpad from this Mac.\n\nNo changes were made.")
+            return
+        }
+
+        // Now tell peer to connect
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
         } catch {
-            showError("Could not connect trackpad on the other Mac:\n\(error.localizedDescription)\n\nNo changes were made.")
-            return
-        }
-        let bt = bluetooth
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            btQueue.async {
-                try? bt.disconnect(mac: mac)
-                continuation.resume()
+            // Rollback: reconnect locally so trackpad isn't lost
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                btQueue.async { try? bt.connect(mac: mac); continuation.resume() }
             }
+            showError("The other Mac failed to connect the trackpad.\nReconnected here as fallback.\n\n\(error.localizedDescription)")
         }
     }
 
