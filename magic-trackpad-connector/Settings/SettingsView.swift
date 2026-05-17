@@ -39,8 +39,8 @@ struct SettingsView: View {
                     Text(error).foregroundStyle(.red).font(.caption)
                 }
 
-                Button(isScanning ? "Scanning…" : "Re-detect Trackpad") {
-                    Task { await scanTrackpads() }
+                Button(isScanning ? "Connecting…" : "Re-detect & Connect") {
+                    Task { await scanAndConnect() }
                 }
                 .disabled(isScanning)
             }
@@ -83,6 +83,15 @@ struct SettingsView: View {
             portString = String(settings.serverPort)
             Task { await scanTrackpads() }
         }
+    }
+
+    private func scanAndConnect() async {
+        await scanTrackpads()
+        // After scanning/detecting, attempt to connect to this Mac
+        let bt = BluetoothManager.shared
+        let mac = settings.trackpadMAC
+        guard !mac.isEmpty else { return }
+        await Task.detached(priority: .userInitiated) { try? bt.connect(mac: mac) }.value
     }
 
     private func scanTrackpads() async {

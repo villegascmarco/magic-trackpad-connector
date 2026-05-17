@@ -44,24 +44,46 @@ final class ToggleCoordinator {
     func toggle() async {
         let mac = settings.trackpadMAC
         guard !mac.isEmpty else {
-            showError("Trackpad MAC address is not configured.\nOpen Settings to configure it.")
-            return
-        }
-
-        guard let peerEndpoint = bonjourService.peerEndpoint else {
-            showError("Peer machine is not reachable.\nMake sure both Macs are on the same network and the app is running on the other Mac.")
+            showError("Trackpad not detected yet.\nOpen Settings — the app will scan automatically.")
             return
         }
 
         let connected = await checkIsConnected(mac: mac)
+        let peerEndpoint = bonjourService.peerEndpoint
 
         if connected {
-            await sendTrackpadToPeer(mac: mac, peerEndpoint: peerEndpoint)
+            // Trackpad is here — send to peer (requires peer online)
+            guard let endpoint = peerEndpoint else {
+                showError("Cannot send trackpad: the other Mac is not reachable.\nMake sure the app is running there too.")
+                return
+            }
+            await sendTrackpadToPeer(mac: mac, peerEndpoint: endpoint)
+        } else if let endpoint = peerEndpoint {
+            // Trackpad is not here and peer is online — take it from peer
+            await bringTrackpadHere(mac: mac, peerEndpoint: endpoint)
         } else {
-            await bringTrackpadHere(mac: mac, peerEndpoint: peerEndpoint)
+            // Trackpad is not connected anywhere — just connect locally
+            await connectLocally(mac: mac)
         }
 
         await refreshConnectionStatus()
+    }
+
+    func connectLocally() async {
+        let mac = settings.trackpadMAC
+        guard !mac.isEmpty else { return }
+        await connectLocally(mac: mac)
+        await refreshConnectionStatus()
+    }
+
+    private func connectLocally(mac: String) async {
+        let bt = bluetooth
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            btQueue.async {
+                try? bt.connect(mac: mac)
+                continuation.resume()
+            }
+        }
     }
 
     private func sendTrackpadToPeer(mac: String, peerEndpoint: NWEndpoint) async {

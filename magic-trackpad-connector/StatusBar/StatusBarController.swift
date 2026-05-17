@@ -70,16 +70,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let toggleTitle = connected
-            ? "Send to \(peerName)"
-            : "Take from \(peerName)"
+        let toggleTitle: String
+        if connected {
+            toggleTitle = peerOnline ? "Send to \(peerName)" : "Trackpad is here"
+        } else {
+            toggleTitle = peerOnline ? "Take from \(peerName)" : "Connect Here"
+        }
         let toggleItem = NSMenuItem(
             title: toggleTitle,
             action: #selector(handleToggle),
             keyEquivalent: ""
         )
         toggleItem.target = self
-        toggleItem.isEnabled = peerOnline && !settings.trackpadMAC.isEmpty
+        // Always allow if MAC is configured: when peer is offline + disconnected, we connect locally
+        toggleItem.isEnabled = !settings.trackpadMAC.isEmpty && !(connected && !peerOnline)
         menu.addItem(toggleItem)
 
         if !bluetooth.isAvailable {
