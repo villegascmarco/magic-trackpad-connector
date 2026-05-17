@@ -13,7 +13,15 @@ final class BluetoothManager: @unchecked Sendable {
     }
 
     nonisolated func connect(mac: String) throws {
-        try run(args: ["--connect", mac])
+        // Retry up to 3 times: the device may need a moment to become
+        // connectable after being released by the other host.
+        var lastError: Error?
+        for attempt in 0..<3 {
+            if attempt > 0 { Thread.sleep(forTimeInterval: 0.6) }
+            do { try run(args: ["--connect", mac]); return }
+            catch { lastError = error }
+        }
+        throw lastError!
     }
 
     nonisolated func disconnect(mac: String) throws {

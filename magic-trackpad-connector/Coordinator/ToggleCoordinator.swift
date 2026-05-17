@@ -32,24 +32,23 @@ final class ToggleCoordinator {
         let mac = settings.trackpadMAC
         guard !mac.isEmpty else { return }
 
-        // Check if already connected here — nothing to do
-        let alreadyHere = await checkIsConnected(mac: mac)
-        if alreadyHere {
+        // Already here — nothing to do.
+        if await checkIsConnected(mac: mac) {
             await refreshConnectionStatus()
             return
         }
 
-        // Wait briefly for Bonjour to discover the peer
+        // Wait briefly for Bonjour to discover the peer before deciding whether
+        // to ask them to release first.
         try? await Task.sleep(for: .seconds(2))
 
-        // Don't steal the trackpad if the peer is online — it might be using it
-        // Let the user decide via the menu bar
-        if bonjourService.peerEndpoint != nil {
-            await refreshConnectionStatus()
-            return
+        // If peer is online, politely ask it to disconnect before we try to grab
+        // the trackpad. Ignore failures — we attempt the connect regardless.
+        if let endpoint = bonjourService.peerEndpoint {
+            _ = try? await sendCommandToPeer(action: "disconnect", endpoint: endpoint)
+            try? await Task.sleep(for: .milliseconds(800))
         }
 
-        // Peer is offline: trackpad is floating, safe to connect locally
         let bt = bluetooth
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             btQueue.async {
@@ -106,16 +105,16 @@ final class ToggleCoordinator {
     }
 
     private func sendTrackpadToPeer(mac: String, peerEndpoint: NWEndpoint) async {
-        // Verify peer is reachable before touching anything
+        // Pre-flight: verify peer is reachable AND ready to receive before
+        // touching the local connection. Nothing is changed if this fails.
         do {
-            _ = try await sendCommandToPeer(action: "status", endpoint: peerEndpoint)
+            _ = try await sendCommandToPeer(action: "ready", endpoint: peerEndpoint)
         } catch {
-            showError("Cannot reach the other Mac:\n\(error.localizedDescription)\n\nNo changes were made.")
+            showError("The other Mac is not ready to receive the trackpad:\n\(error.localizedDescription)\n\nNo changes were made.")
             return
         }
 
-        // Disconnect locally FIRST — Bluetooth only allows one host at a time,
-        // so the peer cannot connect while we still hold the connection.
+        // Disconnect locally — Bluetooth only allows one host at a time.
         let bt = bluetooth
         let disconnected = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             btQueue.async {
@@ -132,11 +131,14 @@ final class ToggleCoordinator {
             return
         }
 
-        // Now tell peer to connect
+        // Give the Bluetooth stack time to fully release the device before
+        // the peer attempts to claim it.
+        try? await Task.sleep(for: .milliseconds(800))
+
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
         } catch {
-            // Rollback: reconnect locally so trackpad isn't lost
+            // Rollback: reconnect locally so the trackpad isn't stranded.
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 btQueue.async { try? bt.connect(mac: mac); continuation.resume() }
             }
@@ -145,18 +147,30 @@ final class ToggleCoordinator {
     }
 
     private func bringTrackpadHere(mac: String, peerEndpoint: NWEndpoint) async {
+        // Tell the peer to release the trackpad.
         do {
             _ = try await sendCommandToPeer(action: "disconnect", endpoint: peerEndpoint)
         } catch {
             showError("Could not disconnect trackpad on the other Mac:\n\(error.localizedDescription)\n\nNo changes were made.")
             return
         }
+
+        // Give the Bluetooth stack time to fully release the device.
+        try? await Task.sleep(for: .milliseconds(800))
+
         let bt = bluetooth
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let success = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             btQueue.async {
-                try? bt.connect(mac: mac)
-                continuation.resume()
+                do {
+                    try bt.connect(mac: mac)
+                    continuation.resume(returning: true)
+                } catch {
+                    continuation.resume(returning: false)
+                }
             }
+        }
+        if !success {
+            showError("The trackpad was released by the other Mac but this Mac could not connect.\nTry again in a moment.")
         }
     }
 

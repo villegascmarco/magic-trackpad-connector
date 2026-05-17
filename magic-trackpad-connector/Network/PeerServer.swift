@@ -66,6 +66,17 @@ final class PeerServer: @unchecked Sendable {
     }
 
     private func execute(_ command: PeerCommand) -> PeerResponse {
+        // "ready" is a pre-flight check: answered before requiring a configured MAC.
+        if command.action == "ready" {
+            guard bluetooth.isAvailable else {
+                return PeerResponse(status: "error", message: "blueutil not installed on this Mac")
+            }
+            guard !settings.trackpadMAC.isEmpty else {
+                return PeerResponse(status: "error", message: "Trackpad MAC not configured on this Mac")
+            }
+            return PeerResponse(status: "ok", message: nil)
+        }
+
         let mac = settings.trackpadMAC
         guard !mac.isEmpty else {
             return PeerResponse(status: "error", message: "Trackpad MAC not configured")
@@ -76,7 +87,9 @@ final class PeerServer: @unchecked Sendable {
             case "connect":
                 try bluetooth.connect(mac: mac)
             case "disconnect":
-                try bluetooth.disconnect(mac: mac)
+                // Treat "already disconnected" as success — blueutil may return non-zero
+                // when the device isn't connected, but that outcome is fine for our use case.
+                try? bluetooth.disconnect(mac: mac)
             case "status":
                 let connected = bluetooth.isConnected(mac: mac)
                 return PeerResponse(status: "ok", message: connected ? "connected" : "disconnected")
