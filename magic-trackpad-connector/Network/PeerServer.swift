@@ -82,6 +82,12 @@ final class PeerServer: @unchecked Sendable {
             guard !settings.trackpadMAC.isEmpty else {
                 return PeerResponse(status: "error", message: "Trackpad MAC not configured on this Mac")
             }
+            // Brace to receive: go non-connectable NOW, before the sender
+            // unplugs the trackpad. From the unplug until our --pair wins,
+            // the hunting trackpad must find no connectable Mac anywhere or
+            // macOS pops the Connection Request dialog. The 30 s failsafe
+            // restores connectable if the transfer never follows through.
+            bluetooth.setConnectable(false)
             return PeerResponse(status: "ok", message: nil)
         }
 

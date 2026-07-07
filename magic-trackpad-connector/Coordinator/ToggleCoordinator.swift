@@ -29,6 +29,11 @@ final class ToggleCoordinator {
 
     // MARK: - Release / Claim modes
 
+    // After releaseForHandoff() this Mac holds no pairing record, so macOS
+    // cannot auto-reconnect on its own — no need to fight it with disconnects
+    // (doing so would sabotage a take-back inside the window). Release mode
+    // only keeps incoming connections off while the trackpad hunts for its
+    // new host, then restores them.
     func enterReleaseMode(duration: TimeInterval = 30) {
         exitClaimMode()
         releaseUntil = Date().addingTimeInterval(duration)
@@ -36,27 +41,11 @@ final class ToggleCoordinator {
         releaseModeTask?.cancel()
         releaseModeTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            // Whenever release mode ends — expiry or cancellation — start
-            // accepting incoming Bluetooth connections again.
-            defer {
-                let bt = self.bluetooth
-                self.btQueue.async { bt.setConnectable(true) }
-            }
-            let mac = self.settings.trackpadMAC
-            guard !mac.isEmpty else { return }
+            // Connectable restoration is handled by the 30 s failsafe inside
+            // setConnectable(false) — restoring it early here would re-expose
+            // this Mac while the trackpad may still be hunting.
             while !Task.isCancelled, Date() < self.releaseUntil {
-                try? await Task.sleep(for: .milliseconds(2000))
-                guard !Task.isCancelled, Date() < self.releaseUntil else { break }
-                let connected = await self.checkIsConnected(mac: mac)
-                if connected {
-                    NSLog("[Coordinator] release mode: disconnecting macOS auto-reconnect")
-                    let bt = self.bluetooth
-                    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                        self.btQueue.async { try? bt.disconnect(mac: mac); c.resume() }
-                    }
-                    self.isTrackpadConnected = false
-                    self.onStatusChanged?()
-                }
+                try? await Task.sleep(for: .milliseconds(500))
             }
             NSLog("[Coordinator] release mode OFF")
         }
@@ -222,8 +211,10 @@ final class ToggleCoordinator {
             }
         }
 
-        // Give the trackpad a beat to settle into pairing mode.
-        try? await Task.sleep(for: .milliseconds(1000))
+        // Brief settle only — the peer's pair loop retries every second, so
+        // starting slightly early is fine; every idle moment here is time the
+        // trackpad spends hunting for a host.
+        try? await Task.sleep(for: .milliseconds(300))
 
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
@@ -235,8 +226,7 @@ final class ToggleCoordinator {
             exitReleaseMode()
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 btQueue.async {
-                    bt.setConnectable(true)
-                    try? bt.pairAfterHandoff(mac: mac)
+                    try? bt.pairAfterHandoff(mac: mac) // restores connectable itself
                     continuation.resume()
                 }
             }
@@ -245,22 +235,37 @@ final class ToggleCoordinator {
     }
 
     private func bringTrackpadHere(mac: String, peerEndpoint: NWEndpoint) async {
+        // Leave any lingering release mode from an earlier send-away.
+        exitReleaseMode()
+
+        // Go dark BEFORE the peer unplugs the trackpad: from that moment it
+        // hunts every Mac it remembers, and finding us connectable pops the
+        // Connection Request dialog. pairAfterHandoff restores connectable
+        // once the trackpad is ours (or the 30 s failsafe does).
+        let bt = bluetooth
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            btQueue.async { bt.setConnectable(false); continuation.resume() }
+        }
+
         // Tell the peer to release the trackpad.
         do {
             _ = try await sendCommandToPeer(action: "disconnect", endpoint: peerEndpoint)
             NSLog("[Coordinator] peer released trackpad, waiting for BT stack to settle")
         } catch {
+            // Nothing was unplugged — safe to be visible again right away.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                btQueue.async { bt.setConnectable(true); continuation.resume() }
+            }
             showError("Could not disconnect trackpad on the other Mac:\n\(error.localizedDescription)\n\nNo changes were made.")
             return
         }
 
         // Give the trackpad a beat to enter pairing mode after the unplug.
-        try? await Task.sleep(for: .milliseconds(1000))
+        try? await Task.sleep(for: .milliseconds(500))
 
         // Pair straight away: host-initiated pairing is silent, while letting
         // the trackpad connect to us first pops the macOS Connection Request
         // dialog. pairAfterHandoff retries quickly to win that race.
-        let bt = bluetooth
         let success = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             btQueue.async {
                 do {
