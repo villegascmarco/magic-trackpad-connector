@@ -36,6 +36,12 @@ final class ToggleCoordinator {
         releaseModeTask?.cancel()
         releaseModeTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Whenever release mode ends — expiry or cancellation — start
+            // accepting incoming Bluetooth connections again.
+            defer {
+                let bt = self.bluetooth
+                self.btQueue.async { bt.setConnectable(true) }
+            }
             let mac = self.settings.trackpadMAC
             guard !mac.isEmpty else { return }
             while !Task.isCancelled, Date() < self.releaseUntil {
@@ -224,11 +230,15 @@ final class ToggleCoordinator {
             // Enter release mode: macOS will try to auto-reconnect here; keep fighting it off.
             enterReleaseMode()
         } catch {
-            // Rollback: re-pair locally so the trackpad isn't stranded. The
-            // trackpad is in pairing mode after the unplug, so connect()'s
-            // re-pair fallback will pick it back up.
+            // Rollback: re-pair locally so the trackpad isn't stranded. It is
+            // in pairing mode after the unplug, so a direct pair picks it up.
+            exitReleaseMode()
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                btQueue.async { try? bt.connect(mac: mac); continuation.resume() }
+                btQueue.async {
+                    bt.setConnectable(true)
+                    try? bt.pairAfterHandoff(mac: mac)
+                    continuation.resume()
+                }
             }
             showError("The other Mac failed to connect the trackpad.\nReconnected here as fallback.\n\n\(error.localizedDescription)")
         }
@@ -244,17 +254,20 @@ final class ToggleCoordinator {
             return
         }
 
-        // Magic Trackpad can take up to ~1.5s to start advertising after disconnect.
-        try? await Task.sleep(for: .milliseconds(1500))
+        // Give the trackpad a beat to enter pairing mode after the unplug.
+        try? await Task.sleep(for: .milliseconds(1000))
 
+        // Pair straight away: host-initiated pairing is silent, while letting
+        // the trackpad connect to us first pops the macOS Connection Request
+        // dialog. pairAfterHandoff retries quickly to win that race.
         let bt = bluetooth
         let success = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             btQueue.async {
                 do {
-                    try bt.connect(mac: mac)
+                    try bt.pairAfterHandoff(mac: mac)
                     continuation.resume(returning: true)
                 } catch {
-                    NSLog("[Coordinator] local connect failed after peer release: \(error.localizedDescription)")
+                    NSLog("[Coordinator] local pair failed after peer release: \(error.localizedDescription)")
                     continuation.resume(returning: false)
                 }
             }

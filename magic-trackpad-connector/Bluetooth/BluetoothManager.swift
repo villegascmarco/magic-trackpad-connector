@@ -44,25 +44,50 @@ final class BluetoothManager: @unchecked Sendable {
     private nonisolated func repairPairingAndConnect(mac: String) throws {
         _ = try? run(args: ["--unpair", mac])
         Thread.sleep(forTimeInterval: 1.0)
+        try pairLoop(mac: mac, attempts: 4, gap: 2.0)
+    }
 
+    /// Pair immediately after the peer released the trackpad via handoff.
+    ///
+    /// Speed matters here: the trackpad, freshly unplugged, actively tries to
+    /// connect to Macs it remembers. A device-initiated connection from an
+    /// unpaired device makes macOS pop the "Connection Request" dialog, while
+    /// a host-initiated --pair (Just Works) completes silently — so skip the
+    /// --connect fast path and start pairing right away, retrying quickly.
+    nonisolated func pairAfterHandoff(mac: String) throws {
+        NSLog("[BT] pairAfterHandoff \(mac)")
+        _ = try? run(args: ["--unpair", mac]) // drop our stale record; local-only
+        try pairLoop(mac: mac, attempts: 6, gap: 1.0)
+    }
+
+    private nonisolated func pairLoop(mac: String, attempts: Int, gap: TimeInterval) throws {
         var lastError: Error?
-        for attempt in 1...4 {
-            NSLog("[BT] pair attempt \(attempt)/4")
+        for attempt in 1...attempts {
+            NSLog("[BT] pair attempt \(attempt)/\(attempts)")
             do {
                 try run(args: ["--pair", mac])
                 _ = try? run(args: ["--connect", mac])
                 try run(args: ["--wait-connect", mac, "10"])
-                NSLog("[BT] re-paired and connected")
+                NSLog("[BT] paired and connected")
                 return
             } catch {
                 lastError = error
                 NSLog("[BT] pair attempt \(attempt) failed: \(error.localizedDescription)")
-                // The sender's macOS may still be fighting for the device;
-                // give its release loop a chance to knock it off again.
-                Thread.sleep(forTimeInterval: 2.0)
+                // 0x02 (No Connection) here usually means the trackpad hasn't
+                // entered pairing mode yet — give it a moment and retry.
+                Thread.sleep(forTimeInterval: gap)
             }
         }
         throw lastError ?? BTError.commandFailed(1, "re-pairing failed")
+    }
+
+    /// Toggle whether this Mac accepts incoming Bluetooth connections.
+    /// Turned off during the release window so the freshly-unplugged trackpad
+    /// cannot crawl back to this Mac (its attempts would pop the macOS
+    /// "Connection Request" dialog — and accepting it breaks the transfer).
+    nonisolated func setConnectable(_ on: Bool) {
+        NSLog("[BT] connectable \(on ? "1" : "0")")
+        _ = try? run(args: ["--connectable", on ? "1" : "0"])
     }
 
     /// Release the trackpad for handoff to the other Mac.
@@ -81,6 +106,10 @@ final class BluetoothManager: @unchecked Sendable {
         let wasConnected = isConnected(mac: mac)
         NSLog("[BT] handoff: unpairing (link up: \(wasConnected)) — trackpad should erase its pairing and become pairable")
         _ = try? run(args: ["--unpair", mac])
+        // Refuse incoming connections while the trackpad hunts for a new host,
+        // so its reconnect attempts here don't pop the macOS Connection Request
+        // dialog. Restored when release mode ends (and on every app launch).
+        setConnectable(false)
         if wasConnected {
             waitForDisconnect(mac: mac, timeout: 6)
         }

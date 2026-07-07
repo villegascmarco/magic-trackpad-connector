@@ -38,6 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         Task {
+            // Crash recovery: releaseForHandoff turns off incoming Bluetooth
+            // connections during the release window; make sure we never leave
+            // the Mac in that state across a relaunch.
+            let resetConnectable = Task.detached { bluetooth.setConnectable(true) }
+            _ = await resetConnectable.value
+
             await autoDetectTrackpadIfNeeded(settings: settings, bluetooth: bluetooth)
             await coordinator.connectOnLaunch()
             statusBarController.updateIcon()

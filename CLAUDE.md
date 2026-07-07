@@ -44,9 +44,10 @@ AppDelegate
 **Link-key handling (critical):** Magic devices store a single Bluetooth link key and only accept pairing while in *pairing mode*. Two consequences drive the whole design:
 
 1. **The sender must unpair while the link is up** (`releaseForHandoff()`): macOS then sends the HID Virtual Cable Unplug, the trackpad erases its own pairing and enters pairing mode. A plain `--disconnect` leaves the trackpad bound to the sender, and the receiver's `--pair` fails with `0x02 (No Connection)` — observed in practice; retrying cannot fix it.
-2. **The receiver must re-pair, not just connect** — its stored key went stale the moment the trackpad paired elsewhere. `connect()` tries `--connect`/`--wait-connect` (5 s) first, and on timeout falls back to `--unpair` → `--pair` → `--wait-connect` (retried 4×, 2 s gaps). Magic devices pair via Just Works SSP (no PIN), so no user action is needed.
+2. **The receiver must re-pair, not just connect** — its stored key went stale the moment the trackpad paired elsewhere. Magic devices pair via Just Works SSP (no PIN), so no user action is needed.
+3. **Host-initiated pairing must win the race.** A freshly-unplugged trackpad actively tries to connect to Macs it remembers; a device-initiated connection from an unpaired device pops the macOS "Connection Request" dialog (observed in practice — and accepting it on the sender breaks the transfer). Countermeasures: the receiver uses `pairAfterHandoff()` (immediate `--unpair` → `--pair` loop, 6×, 1 s gaps, no connect fast path), and the releasing Mac sets `--connectable 0` for the release window so the trackpad can't crawl back (restored when release mode ends and defensively on every launch).
 
-`connectSimple()` skips the re-pair fallback and is used only in claim mode, where the pairing is known-fresh and an unpair on a transient failure would be harmful. Manual recovery if a handoff strands the trackpad: power-cycle it (it enters pairing mode when its stored host rejects it) or plug it into either Mac via cable, which re-pairs instantly.
+`connect()` (launch/manual paths) tries `--connect`/`--wait-connect` (5 s) first and falls back to the re-pair loop (4×, 2 s gaps) on timeout. `connectSimple()` skips the fallback and is used only in claim mode, where the pairing is known-fresh and an unpair on a transient failure would be harmful. Manual recovery if a handoff strands the trackpad: power-cycle it (it enters pairing mode when its stored host rejects it) or plug it into either Mac via cable, which re-pairs instantly.
 
 **Inter-Mac protocol** (`Network/`) is newline-delimited JSON over TCP:
 - Commands: `{"action": "ready" | "connect" | "disconnect" | "status"}`
@@ -54,8 +55,8 @@ AppDelegate
 - `ready` is a pre-flight check (validates blueutil + MAC configured) answered before any BT state is changed.
 
 **Transfer flow** (`Coordinator/ToggleCoordinator.swift`):
-- *Send to peer*: pre-flight `ready` → `releaseForHandoff()` locally (unpair while connected → Virtual Cable Unplug) → 1 s settle → tell peer to connect (peer re-pairs).
-- *Take from peer*: tell peer to release (its `disconnect` handler runs `releaseForHandoff()` and blocks until the device is gone) → wait 1.5 s → `connect()` locally, which re-pairs.
+- *Send to peer*: pre-flight `ready` → `releaseForHandoff()` locally (unpair while connected → Virtual Cable Unplug, then `--connectable 0`) → 1 s settle → tell peer to connect (peer runs `pairAfterHandoff()`).
+- *Take from peer*: tell peer to release (its `disconnect` handler runs `releaseForHandoff()` and blocks until the device is gone) → wait 1 s → `pairAfterHandoff()` locally.
 - On launch the app only claims the trackpad if the peer is offline or reports it disconnected (`status` command) — a release is now a full unpair, far too aggressive to trigger automatically.
 
 ## Key project-wide setting

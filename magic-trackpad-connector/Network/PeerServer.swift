@@ -93,7 +93,11 @@ final class PeerServer: @unchecked Sendable {
         do {
             switch command.action {
             case "connect":
-                try bluetooth.connect(mac: mac)
+                // The sender just released the trackpad via handoff (it is in
+                // pairing mode). Pair immediately — host-initiated pairing is
+                // silent; waiting lets the trackpad connect to us first, which
+                // pops the macOS Connection Request dialog.
+                try bluetooth.pairAfterHandoff(mac: mac)
                 DispatchQueue.main.async { [weak self] in self?.onClaimRequested?() }
             case "disconnect":
                 // Full handoff release: unpair while the link is up so the trackpad
