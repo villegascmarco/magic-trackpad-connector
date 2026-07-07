@@ -73,7 +73,9 @@ final class ToggleCoordinator {
                     NSLog("[Coordinator] claim mode: reconnecting (stolen back by other Mac)")
                     let bt = self.bluetooth
                     await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                        self.btQueue.async { try? bt.connect(mac: mac); c.resume() }
+                        // connectSimple: our pairing is fresh here — never unpair
+                        // on a transient failure inside the claim loop.
+                        self.btQueue.async { try? bt.connectSimple(mac: mac); c.resume() }
                     }
                     await self.refreshConnectionStatus()
                 }

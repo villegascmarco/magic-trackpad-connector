@@ -14,17 +14,60 @@ final class BluetoothManager: @unchecked Sendable {
 
     nonisolated func connect(mac: String) throws {
         NSLog("[BT] connect \(mac)")
-        // Initiate a single connection request, then block until the BT stack
-        // confirms the link is up (up to 10s). --wait-connect avoids hammering
-        // the device with repeated requests, which triggers its per-host backoff.
-        try? run(args: ["--connect", mac])           // ok if this exits non-zero
-        try run(args: ["--wait-connect", mac, "10"]) // throws on timeout
+        // Fast path: our stored link key is still valid on the trackpad.
+        // --wait-connect avoids hammering the device with repeated requests,
+        // which triggers its per-host backoff.
+        _ = try? run(args: ["--connect", mac]) // ok if this exits non-zero
+        do {
+            try run(args: ["--wait-connect", mac, "5"])
+            NSLog("[BT] connect confirmed")
+            return
+        } catch {
+            NSLog("[BT] connect timed out — link key likely stale (trackpad re-paired with the other Mac), falling back to re-pair")
+        }
+        try repairPairingAndConnect(mac: mac)
+    }
+
+    /// Plain connect with no re-pair fallback. For claim mode, where the link
+    /// key is known-fresh and an unpair on a transient failure would be harmful.
+    nonisolated func connectSimple(mac: String) throws {
+        NSLog("[BT] connectSimple \(mac)")
+        _ = try? run(args: ["--connect", mac])
+        try run(args: ["--wait-connect", mac, "10"])
         NSLog("[BT] connect confirmed")
+    }
+
+    /// Magic devices store a single link key: once the trackpad pairs with the
+    /// other Mac, this Mac's key is invalidated and every connect attempt is
+    /// silently rejected. Unpair + pair (Just Works SSP, no PIN) mints a fresh
+    /// key — it is the only way to get the device back without user action.
+    private nonisolated func repairPairingAndConnect(mac: String) throws {
+        _ = try? run(args: ["--unpair", mac])
+        Thread.sleep(forTimeInterval: 1.0)
+
+        var lastError: Error?
+        for attempt in 1...4 {
+            NSLog("[BT] pair attempt \(attempt)/4")
+            do {
+                try run(args: ["--pair", mac])
+                _ = try? run(args: ["--connect", mac])
+                try run(args: ["--wait-connect", mac, "10"])
+                NSLog("[BT] re-paired and connected")
+                return
+            } catch {
+                lastError = error
+                NSLog("[BT] pair attempt \(attempt) failed: \(error.localizedDescription)")
+                // The sender's macOS may still be fighting for the device;
+                // give its release loop a chance to knock it off again.
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+        }
+        throw lastError ?? BTError.commandFailed(1, "re-pairing failed")
     }
 
     nonisolated func waitForDisconnect(mac: String, timeout: Int = 6) {
         NSLog("[BT] waiting for \(mac) to fully disconnect (max \(timeout)s)")
-        try? run(args: ["--wait-disconnect", mac, "\(timeout)"])
+        _ = try? run(args: ["--wait-disconnect", mac, "\(timeout)"])
         NSLog("[BT] disconnect confirmed")
     }
 
