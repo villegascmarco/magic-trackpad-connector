@@ -118,14 +118,18 @@ final class ToggleCoordinator {
         }
 
         // Wait briefly for Bonjour to discover the peer before deciding whether
-        // to ask them to release first.
+        // the trackpad is in use over there.
         try? await Task.sleep(for: .seconds(2))
 
-        // If peer is online, politely ask it to disconnect before we try to grab
-        // the trackpad. Ignore failures — we attempt the connect regardless.
-        if let endpoint = bonjourService.peerEndpoint {
-            _ = try? await sendCommandToPeer(action: "disconnect", endpoint: endpoint)
-            try? await Task.sleep(for: .milliseconds(800))
+        // If the peer is online and actively using the trackpad, leave it alone —
+        // a release now means a full unpair/handoff, far too aggressive for launch.
+        // The user can always take it explicitly from the menu.
+        if let endpoint = bonjourService.peerEndpoint,
+           let response = try? await sendCommandToPeer(action: "status", endpoint: endpoint),
+           response.message == "connected" {
+            NSLog("[Coordinator] launch: peer has the trackpad, not claiming it")
+            await refreshConnectionStatus()
+            return
         }
 
         let bt = bluetooth
@@ -200,42 +204,29 @@ final class ToggleCoordinator {
             return
         }
 
-        // Disconnect locally — Bluetooth only allows one host at a time.
+        // Unpair while the link is up: macOS sends the HID Virtual Cable Unplug,
+        // the trackpad erases its own pairing and enters pairing mode — the only
+        // state in which the other Mac's --pair can succeed.
+        NSLog("[Coordinator] releasing trackpad for handoff (unpair while connected)")
         let bt = bluetooth
-        let disconnected = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             btQueue.async {
-                do {
-                    try bt.disconnect(mac: mac)
-                    continuation.resume(returning: true)
-                } catch {
-                    continuation.resume(returning: false)
-                }
+                bt.releaseForHandoff(mac: mac)
+                continuation.resume()
             }
-        }
-        guard disconnected else {
-            showError("Could not disconnect trackpad from this Mac.\n\nNo changes were made.")
-            return
         }
 
-        // blueutil --disconnect returns before the BT hardware has fully torn down
-        // the link. Poll isConnected until the device is genuinely gone, then add a
-        // small extra buffer so Mac B doesn't race with the link teardown.
-        NSLog("[Coordinator] disconnect issued, polling until device is fully released")
-        for attempt in 0..<20 {
-            try? await Task.sleep(for: .milliseconds(300))
-            if !(await checkIsConnected(mac: mac)) {
-                NSLog("[Coordinator] device released after \((attempt + 1) * 300)ms")
-                break
-            }
-        }
-        try? await Task.sleep(for: .milliseconds(500))
+        // Give the trackpad a beat to settle into pairing mode.
+        try? await Task.sleep(for: .milliseconds(1000))
 
         do {
             _ = try await sendCommandToPeer(action: "connect", endpoint: peerEndpoint)
             // Enter release mode: macOS will try to auto-reconnect here; keep fighting it off.
             enterReleaseMode()
         } catch {
-            // Rollback: reconnect locally so the trackpad isn't stranded.
+            // Rollback: re-pair locally so the trackpad isn't stranded. The
+            // trackpad is in pairing mode after the unplug, so connect()'s
+            // re-pair fallback will pick it back up.
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 btQueue.async { try? bt.connect(mac: mac); continuation.resume() }
             }

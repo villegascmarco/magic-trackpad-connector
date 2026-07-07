@@ -96,11 +96,12 @@ final class PeerServer: @unchecked Sendable {
                 try bluetooth.connect(mac: mac)
                 DispatchQueue.main.async { [weak self] in self?.onClaimRequested?() }
             case "disconnect":
-                // Graceful disconnect: blueutil may return non-zero if already disconnected.
-                try? bluetooth.disconnect(mac: mac)
-                // Block until the device is truly gone before sending "ok" — prevents the
-                // receiver from attempting to connect while the BT link is still up.
-                bluetooth.waitForDisconnect(mac: mac, timeout: 6)
+                // Full handoff release: unpair while the link is up so the trackpad
+                // gets the Virtual Cable Unplug, erases its own pairing and enters
+                // pairing mode. A plain disconnect leaves it bound to this Mac and
+                // the requester's --pair then fails with 0x02 (No Connection).
+                // Blocks until the device is truly gone before replying "ok".
+                bluetooth.releaseForHandoff(mac: mac)
                 DispatchQueue.main.async { [weak self] in self?.onReleaseRequested?() }
             case "status":
                 let connected = bluetooth.isConnected(mac: mac)

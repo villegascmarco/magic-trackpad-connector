@@ -65,6 +65,27 @@ final class BluetoothManager: @unchecked Sendable {
         throw lastError ?? BTError.commandFailed(1, "re-pairing failed")
     }
 
+    /// Release the trackpad for handoff to the other Mac.
+    ///
+    /// The trackpad erases its own pairing and enters pairing mode ONLY when
+    /// the unpair happens while the link is up — macOS then sends the HID
+    /// Virtual Cable Unplug to the device (same as "Forget This Device").
+    /// A plain --disconnect leaves the trackpad holding this Mac's key, and it
+    /// will then refuse pairing from the other Mac with 0x02 (No Connection).
+    nonisolated func releaseForHandoff(mac: String) {
+        if !isConnected(mac: mac) {
+            NSLog("[BT] handoff: not connected — connecting first so the virtual cable unplug reaches the device")
+            _ = try? run(args: ["--connect", mac])
+            _ = try? run(args: ["--wait-connect", mac, "5"])
+        }
+        let wasConnected = isConnected(mac: mac)
+        NSLog("[BT] handoff: unpairing (link up: \(wasConnected)) — trackpad should erase its pairing and become pairable")
+        _ = try? run(args: ["--unpair", mac])
+        if wasConnected {
+            waitForDisconnect(mac: mac, timeout: 6)
+        }
+    }
+
     nonisolated func waitForDisconnect(mac: String, timeout: Int = 6) {
         NSLog("[BT] waiting for \(mac) to fully disconnect (max \(timeout)s)")
         _ = try? run(args: ["--wait-disconnect", mac, "\(timeout)"])
