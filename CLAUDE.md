@@ -2,73 +2,98 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Requirements, acceptance criteria and the measured Bluetooth facts live in
+`REQUIREMENTS.md` — read it before changing behavior.
+
 ## Build
 
 ```bash
-# Build (Debug)
-xcodebuild -project magic-trackpad-connector.xcodeproj \
-  -scheme magic-trackpad-connector -configuration Debug build
-
-# Build (Release)
-xcodebuild -project magic-trackpad-connector.xcodeproj \
-  -scheme magic-trackpad-connector -configuration Release build
-
-# Open in Xcode
-open magic-trackpad-connector.xcodeproj
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer   # mini: xcode-select points at CLT
+xcodebuild -project magic-trackpad-connector.xcodeproj -scheme magic-trackpad-connector \
+  -configuration Release -derivedDataPath build/dd \
+  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 ```
 
-There are no unit tests, but the transfer protocol has a simulation harness:
+Ad-hoc signed. Install on both Macs (`/Applications` here, `~/Applications`
+on the MacBook via `rsync … mbp:`); first launch asks for Bluetooth and Local
+Network permission once per Mac.
 
-```bash
-python3 Tools/simulate_handoff.py   # must print "all scenarios pass"
-```
+## Verification (run after any behavior change)
 
-It models the trackpad's observed behavior (single link key, Virtual Cable Unplug → pairing mode, host hunting → Connection Request dialogs) and replays the exact blueutil sequences from the Swift code. **Update the transcribed sequences in that file whenever `BluetoothManager`/`ToggleCoordinator`/`PeerServer` change the blueutil choreography, and re-run it.** Real Bluetooth cannot be exercised in CI or VMs (no BT controller in macOS virtualization), so this is the only pre-hardware check.
+1. `python3 Tools/simulate_handoff.py` — must print `all scenarios pass`. It
+   transcribes the Bluetooth recipes from `HandoffCoordinator.swift`
+   (`release` / `acquireAfterRelease` / `claim` / `pairAndConnect`) and
+   `BluetoothManager.settle`; **update it whenever those change.**
+2. `Tools/e2e.sh` — real two-Mac end-to-end suite (toggle, lock, sleep, race,
+   arrive/no-steal, orchestrator fallback). Needs SSH alias `mbp` to the other
+   Mac and both apps running with automatic handoff on.
+3. `Tools/ctl.sh [-r mbp] '{"action":…}'` — loopback control port for manual
+   probing (`status`, `push`, `pull`, `toggle`, `event`, `auto`, `config`,
+   `log`, `bt` with `op` = state|connect|disconnect|pair|unpair|release|acquire|claim|paired|hid).
 
-## Runtime dependency
-
-`blueutil` must be installed on every Mac that runs the app:
-
-```bash
-brew install blueutil
-```
-
-The app checks `/opt/homebrew/bin/blueutil` and `/usr/local/bin/blueutil`. All Bluetooth operations shell out to this CLI via `Process` — there is no CoreBluetooth usage.
+Gotchas: `defaults write` from a sandboxed shell does not reach the app — use
+the `config`/`auto` control actions. Xcode's debugger can leave a stopped old
+instance holding port 7890.
 
 ## Architecture
 
 ```
 AppDelegate
-  ├── PeerServer        — TCP listener (port 7890), advertises _mtconnector._tcp via Bonjour
-  ├── BonjourService    — discovers the peer Mac's _mtconnector._tcp service
-  ├── ToggleCoordinator — owns the transfer state machine (@MainActor)
-  └── StatusBarController — menu-bar UI, rebuilds menu on open
+  ├── PeerServer          — TCP :7890, Bonjour _mtconnector._tcp; JSON lines; loopback-only control actions
+  ├── BonjourService      — finds the peer (fallback: configured host)
+  ├── SystemEvents        — lock/unlock, sleep (held until handoff done, ≤25 s), wake, power-off, idle time
+  ├── HandoffCoordinator  — transfer flows + automatic policy (@MainActor)
+  ├── StatusBarController — menu: location, Send/Bring (⌃⌥⌘T), Automatic Handoff, role
+  └── Hotkey              — Carbon global hotkey ⌃⌥⌘T → toggle
 ```
 
-**BluetoothManager** (`Bluetooth/BluetoothManager.swift`) is a singleton that wraps every blueutil call. All `Process` invocations run on a caller-owned serial queue (userInitiated) so the main thread never blocks.
+**BluetoothManager** uses **IOBluetooth in-process** on one dedicated run-loop
+thread, serialized by a queue. No blueutil: it can't get Bluetooth permission
+under launchd/SSH (hangs), and its `--connectable` flag never existed. Unpair
+uses the private `remove` selector (same as blueutil).
 
-**Link-key handling (critical):** Magic devices store a single Bluetooth link key and only accept pairing while in *pairing mode*. Two consequences drive the whole design:
+**Bluetooth facts (measured, see REQUIREMENTS.md):** Magic devices hold one
+host key. A handoff = sender unpairs *while connected* (macOS sends the HID
+Virtual Cable Unplug, device forgets its host and becomes pairable) → receiver
+pairs immediately (Just Works, silent, ~3 s total, no dialogs).
 
-1. **The sender must unpair while the link is up** (`releaseForHandoff()`): macOS then sends the HID Virtual Cable Unplug, the trackpad erases its own pairing and enters pairing mode. A plain `--disconnect` leaves the trackpad bound to the sender, and the receiver's `--pair` fails with `0x02 (No Connection)` — observed in practice; retrying cannot fix it.
-2. **The receiver must re-pair, not just connect** — its stored key went stale the moment the trackpad paired elsewhere. Magic devices pair via Just Works SSP (no PIN), so no user action is needed.
-3. **Both Macs must be non-connectable from the unplug until the receiver's `--pair` wins.** A freshly-unplugged trackpad actively hunts every Mac it remembers; any device-initiated connection it lands pops the macOS "Connection Request" dialog (observed in practice on both sides — accepting it on the sender breaks the transfer). So: the receiver goes `--connectable 0` when answering the `ready` pre-flight (before anything is unplugged), the sender goes dark inside `releaseForHandoff()` *before* the `--unpair`, a taker goes dark before sending `disconnect` to the peer, and `pairAfterHandoff()` (immediate `--unpair` → `--pair` loop, 6×, 1 s gaps, no connect fast path — host-initiated pairing needs no local page scan) restores connectable only after pairing succeeds. Every `--connectable 0` arms a 30 s failsafe that re-enables it, so no failure path leaves a Mac permanently invisible. This choreography is verified by a simulation harness (see below).
+- **Never unpair before the device's HID channel is open** (`isHIDReady`:
+  an IOHIDDevice whose SerialNumber is the address). Unpairing ~1–5 s after a
+  fresh connect removed the record without the device noticing → stranded
+  (every host gets `0x02` until a cable/power-cycle). `settle()` waits for HID plus 1.5 s from when it first appeared (per link);
+  `release()` refuses (changes nothing) if HID never opens.
+- A released device stops answering within a few minutes → never release
+  unless a receiver is pairing right now; with no reachable peer, sleep/shutdown
+  keep the device.
+- A Mac that dies holding the device can't be recovered by the other Mac
+  (`0x02`); the user must cable/power-cycle it.
 
-`connect()` (launch/manual paths) tries `--connect`/`--wait-connect` (5 s) first and falls back to the re-pair loop (4×, 2 s gaps) on timeout. `connectSimple()` skips the fallback and is used only in claim mode, where the pairing is known-fresh and an unpair on a transient failure would be harmful. Manual recovery if a handoff strands the trackpad: power-cycle it (it enters pairing mode when its stored host rejects it) or plug it into either Mac via cable, which re-pairs instantly.
+**Networking:** peer connections are **IPv4-only** — the MDM MacBook
+advertises `::1`/`fe80::1` over Bonjour and Network.framework would connect to
+our own loopback. Every response carries `from` (responder name); a reply
+from ourselves is treated as unreachable.
 
-**Inter-Mac protocol** (`Network/`) is newline-delimited JSON over TCP:
-- Commands: `{"action": "ready" | "connect" | "disconnect" | "status"}`
-- Responses: `{"status": "ok" | "error", "message": "..."}`
-- `ready` is a pre-flight check (validates blueutil + MAC configured) answered before any BT state is changed.
+**Peer protocol:** `{"action": "status"|"prepare"|"receive"|"release"|"cancel", "devices": [...]}`
+→ `{"status": "ok"|"error", "from": name, …}`. After `prepare`, a watchdog
+pairs immediately if the sender vanishes or `receive` never comes (shutdown
+kills the app within seconds of the unplug). `status` returns `holds`, `available`
+(awake+unlocked), `idle`, `busy`, `role`. A Mac with no devices configured
+adopts the peer's list.
 
-**Transfer flow** (`Coordinator/ToggleCoordinator.swift`):
-- *Send to peer*: pre-flight `ready` → `releaseForHandoff()` locally (unpair while connected → Virtual Cable Unplug, then `--connectable 0`) → 1 s settle → tell peer to connect (peer runs `pairAfterHandoff()`).
-- *Take from peer*: tell peer to release (its `disconnect` handler runs `releaseForHandoff()` and blocks until the device is gone) → wait 1 s → `pairAfterHandoff()` locally.
-- On launch the app only claims the trackpad if the peer is offline or reports it disconnected (`status` command) — a release is now a full unpair, far too aggressive to trigger automatically.
+**Policy** (top of `HandoffCoordinator.swift`): lock → push if peer unlocked;
+sleep/shutdown → push if peer reachable (shutdown skips the disconnect wait);
+launch → take only if nobody holds or the holder is locked/asleep;
+wake/unlock → also take from a holder idle ≥120 s; every 15 s → take from a
+locked/asleep holder, and the **primary** (orchestrator) claims devices nobody
+holds (rate-limited to once a minute).
 
 ## Key project-wide setting
 
-`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` is set in build settings. This causes synthesised `Codable` conformances to inherit `@MainActor`. `Models.swift` uses **manual** `Encodable`/`Decodable` implementations with `nonisolated` to work around this — follow the same pattern for any new Codable types.
+`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Background types are declared
+`nonisolated` (BluetoothManager, PeerServer, Log, Wire). Messages are plain
+`[String: Any]` JSON, avoiding the Codable/MainActor issue.
 
 ## Debugging
 
-`NSLog("[BT] ...")` and `NSLog("[Coordinator] ...")` are sprinkled throughout. Filter Console.app by the process name `magic-trackpad-connector` to see real-time Bluetooth and coordination events including exact blueutil exit codes and stderr output.
+`~/Library/Logs/MagicTrackpadConnector.log` on each Mac (also `ctl.sh '{"action":"log"}'`),
+tags `[BT] [Flow] [Policy] [Sys] [Net] [State]`.

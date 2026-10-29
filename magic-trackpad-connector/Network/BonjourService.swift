@@ -8,8 +8,16 @@ final class BonjourService {
     private var browser: NWBrowser?
 
     private(set) var peerName: String?
-    private(set) var peerEndpoint: NWEndpoint?
-    var isPeerOnline: Bool { peerEndpoint != nil }
+    private var discoveredEndpoint: NWEndpoint?
+    var isPeerDiscovered: Bool { discoveredEndpoint != nil }
+
+    /// Bonjour result first, else the manually configured host.
+    var peerEndpoint: NWEndpoint? {
+        if let discoveredEndpoint { return discoveredEndpoint }
+        let host = settings.peerHost.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty, let port = NWEndpoint.Port(rawValue: UInt16(settings.serverPort)) else { return nil }
+        return .hostPort(host: NWEndpoint.Host(host), port: port)
+    }
 
     var onPeerChanged: (() -> Void)?
 
@@ -18,51 +26,36 @@ final class BonjourService {
     }
 
     func start() {
-        let browser = NWBrowser(
-            for: .bonjourWithTXTRecord(type: "_mtconnector._tcp", domain: nil),
-            using: .tcp
-        )
-
-        // Capture before the Sendable closure to avoid crossing the @MainActor boundary.
+        let browser = NWBrowser(for: .bonjour(type: "_mtconnector._tcp", domain: nil), using: .tcp)
         let myName = settings.thisMachineName
 
         browser.browseResultsChangedHandler = { [weak self] results, _ in
-            let peer = results.first(where: { result in
-                if case .service(let name, _, _, _) = result.endpoint {
-                    return name != myName
-                }
+            let peer = results.first { result in
+                if case .service(let name, _, _, _) = result.endpoint { return name != myName }
                 return false
-            })
-
+            }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let peer {
-                    if case .service(let name, _, _, _) = peer.endpoint {
-                        self.peerName = name
-                    }
-                    self.peerEndpoint = peer.endpoint
+                let before = self.peerName
+                if let peer, case .service(let name, _, _, _) = peer.endpoint {
+                    self.peerName = name
+                    self.discoveredEndpoint = peer.endpoint
                 } else {
                     self.peerName = nil
-                    self.peerEndpoint = nil
+                    self.discoveredEndpoint = nil
+                }
+                if before != self.peerName {
+                    Log.write("Net", "peer \(self.peerName.map { "found: \($0)" } ?? "lost")")
                 }
                 self.onPeerChanged?()
             }
         }
-
         browser.stateUpdateHandler = { state in
             if case .failed(let error) = state {
-                print("[BonjourService] browser failed: \(error)")
+                Log.write("Net", "browser failed: \(error)")
             }
         }
-
         browser.start(queue: .global())
         self.browser = browser
-    }
-
-    func stop() {
-        browser?.cancel()
-        browser = nil
-        peerName = nil
-        peerEndpoint = nil
     }
 }
