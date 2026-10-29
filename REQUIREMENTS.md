@@ -63,6 +63,7 @@ Later measurements (same day):
 | RT5 | real restart (2nd) | handed off via watchdog, ~19 s; app auto-started at login and left trackpad on mini |
 | RT6 | real restart (3rd, fast shutdown path) | **2.3 s** power-off → trackpad on mini; no steal after boot |
 | RT8 | real **lid close** on MacBook (built-in display only) holding the trackpad | lid close → screen lock → trackpad on mini ~4 s later; after reopening/unlocking, it stayed on the mini |
+| MD1 | both Macs manage the trackpad + a second, switched-off device (placeholder address); full e2e | 13/13 — only present devices move; the absent one is skipped without failing or rolling back the trackpad |
 | RT7 | owner "crashes" (app force-killed + Bluetooth off) holding the trackpad | other Mac enters recovery mode within 14 s (claims refused `0x02`); user switches trackpad off/on → paired automatically ~8 s later, no cable. Returning owner does not steal it back |
 | — | owner Bluetooth off, other Mac retries 60 s without power cycle | stays bound (`0x02`) — one anomalous immediate success in 5 trials |
 | — | both Macs: `pmset -g` | `SleepDisabled 1` — system sleep never happens; lid close / Apple menu Sleep only lock (→ R4 path, RT1) |
@@ -75,7 +76,7 @@ Later measurements (same day):
 | R5 | shutdown/restart verified on hardware (RT5, RT6: 2.3 s). Lid close on these Macs = lock (sleep disabled by `pmset`) — real lid close verified (RT8, ~4 s); Apple menu Sleep likewise (RT1). The sleep-hold path (IOKit, ≤25 s) only runs if sleep is re-enabled; covered by simulated events only |
 | R6 | by design (no peer → keep device, rate-limited claims) |
 | R10 | no Connection Request dialogs in any run; one-time Bluetooth/Local Network prompt per new build (ad-hoc signing) |
-| R12 | implemented (Settings device list, devices move as a group); untested — no Magic Keyboard/Mouse available |
+| R12 | implemented: each managed device moves independently (MD1 verified the multi-device paths with a second, absent device). Not tested with a real second Apple device — none available |
 | Crash / power loss | a Mac that dies holding the device: the other Mac shows "switch it off and on" and retries every ~3 s for 10 min; one power cycle recovers it (RT7). Fully automatic recovery is impossible — the device stays bound to the dead host until power-cycled |
 
 ## Verification
