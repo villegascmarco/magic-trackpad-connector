@@ -1,5 +1,6 @@
 import AppKit
 import Network
+import UserNotifications
 
 /// Owns the transfer flows and the automatic policy.
 ///
@@ -20,6 +21,7 @@ import Network
 /// a handoff is "unpair while the link is up" on the sender (macOS sends the
 /// HID Virtual Cable Unplug; the device forgets its host and becomes pairable)
 /// followed by a fresh host-initiated pair on the receiver.
+@Observable
 @MainActor
 final class HandoffCoordinator {
     private let settings: AppSettings
@@ -31,8 +33,12 @@ final class HandoffCoordinator {
     private let idleStealSeconds: Double = 120
 
     var onChange: (() -> Void)?
+    /// Control action `ui`: open the menu or a Settings pane (for screenshots).
+    var onShowUI: ((String) -> Void)?
 
     private(set) var holdsHere = false
+    /// Managed devices whose link to this Mac is up (for per-device UI).
+    private(set) var connectedHere: Set<String> = []
     private(set) var lastPeer: PeerState?
     private(set) var lastResult: String = ""
     /// A transfer this Mac is running or taking part in.
@@ -47,6 +53,8 @@ final class HandoffCoordinator {
 
     var isBusy: Bool { busy || Date() < receivingUntil }
     var isAvailable: Bool { !events.isLocked && !events.isAsleep && !shuttingDown }
+    /// A device is bound to a Mac that went away; the menu shows the power-cycle hint.
+    var isRecovering: Bool { stuckSince.map { Date().timeIntervalSince($0) < 600 } ?? false }
 
     init(settings: AppSettings, bonjour: BonjourService, events: SystemEvents) {
         self.settings = settings
@@ -125,14 +133,16 @@ final class HandoffCoordinator {
 
     func refresh() async {
         let macs = settings.deviceMACs
-        let held = await bt.run { [bt] in
-            var any = false
+        let connected = await bt.run { [bt] in
+            var connected = Set<String>()
             for mac in macs where bt.isConnected(mac) {
-                any = true
+                connected.insert(mac)
                 _ = bt.isHIDReady(mac) // starts settle()'s readiness clock early
             }
-            return any
+            return connected
         }
+        let held = !connected.isEmpty
+        connectedHere = connected
         if held != holdsHere { Log.write("State", held ? "devices are here" : "devices are not here") }
         holdsHere = held
         onChange?()
@@ -174,14 +184,34 @@ final class HandoffCoordinator {
             lastResult = message
         case .failure(let error):
             lastResult = error.message
-            let alert = NSAlert()
-            alert.messageText = "Magic Trackpad Connector"
-            alert.informativeText = error.message
-            alert.alertStyle = .warning
-            NSApp.activate(ignoringOtherApps: true)
-            alert.runModal()
+            notifyFailure(error.message)
         }
         onChange?()
+    }
+
+    /// A menu bar app shouldn't steal focus with a modal alert: post a
+    /// notification, and fall back to an alert only if notifications are off.
+    private func notifyFailure(_ message: String) {
+        Task {
+            let center = UNUserNotificationCenter.current()
+            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else {
+                return Self.alert(message)
+            }
+            let content = UNMutableNotificationContent()
+            content.title = "Couldn’t Move Devices"
+            content.body = message
+            content.sound = .default
+            try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
+    }
+
+    private static func alert(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn’t Move Devices"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        NSApp.activate()
+        alert.runModal()
     }
 
     // MARK: - Automatic policy
@@ -568,6 +598,9 @@ final class HandoffCoordinator {
                        "auto": settings.autoHandoff, "peer": bonjour.peerName ?? NSNull()])
         case "log":
             return ok(["lines": Log.tail(request["count"] as? Int ?? 100)])
+        case "ui":
+            onShowUI?(request["show"] as? String ?? "menu")
+            return ok()
         case "bt":
             return await debugBluetooth(request)
         default:

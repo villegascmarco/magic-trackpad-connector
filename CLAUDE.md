@@ -29,7 +29,7 @@ Network permission once per Mac.
    Mac and both apps running with automatic handoff on.
 3. `Tools/ctl.sh [-r mbp] '{"action":…}'` — loopback control port for manual
    probing (`status`, `push`, `pull`, `toggle`, `event`, `auto`, `config`,
-   `log`, `bt` with `op` = state|connect|disconnect|pair|unpair|release|acquire|claim|paired|hid).
+   `log`, `ui` with `show` = panel|menu|general|devices|network|about, `bt` with `op` = state|connect|disconnect|pair|unpair|release|acquire|claim|paired|hid).
 
 Gotchas: `defaults write` from a sandboxed shell does not reach the app — use
 the `config`/`auto` control actions. Xcode's debugger can leave a stopped old
@@ -43,7 +43,8 @@ AppDelegate
   ├── BonjourService      — finds the peer (fallback: configured host)
   ├── SystemEvents        — lock/unlock, sleep (held until handoff done, ≤25 s), wake, power-off, idle time
   ├── HandoffCoordinator  — transfer flows + automatic policy (@MainActor)
-  ├── StatusBarController — menu: location, Send/Bring (⌃⌥⌘T), Automatic Handoff, role
+  ├── StatusBarController — click: ControlPanel (Control Center–style glass panel); right-click: Bluetooth-style menu
+  ├── SettingsWindowController — toolbar-tab Settings (General / Devices / Network), grouped SwiftUI forms
   └── Hotkey              — Carbon global hotkey ⌃⌥⌘T → toggle
 ```
 
@@ -90,6 +91,16 @@ launch → take only if nobody holds or the holder is locked/asleep;
 wake/unlock → also take from a holder idle ≥120 s; every 15 s → take from a
 locked/asleep holder, and the **primary** (orchestrator) claims devices nobody
 holds (rate-limited to once a minute).
+
+## UI conventions (macOS 26+/27 HIG)
+
+Native AppKit/SwiftUI only: SF Symbols, system colors, Liquid Glass
+(`NSGlassEffectView` panel, `.glassEffect` tiles, `.buttonStyle(.glass)`) for
+the click panel, `NSMenuItem.sectionHeader` and `subtitle` in the right-click menu, toolbar-style tabbed Settings with `.formStyle(.grouped)`
+and section footers for explanations. App icon is the Icon Composer file
+`AppIcon.icon` (Liquid Glass layers). Manual-transfer failures post a
+notification (alert only if notifications are denied) — never a modal during
+automatic handoffs (R10).
 
 ## Key project-wide setting
 
