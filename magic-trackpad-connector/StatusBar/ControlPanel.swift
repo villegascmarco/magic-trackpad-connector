@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// The menu bar panel, built like Control Center: a Liquid Glass sheet under
-/// the status item holding glass tiles with round toggle icons.
+/// The menu bar panel, built like Control Center: free-floating Liquid Glass
+/// modules (capsules, circles, a square tile) under the status item, with no
+/// sheet behind them.
 @MainActor
 final class ControlPanelController: NSObject, NSWindowDelegate {
     struct Actions {
@@ -42,10 +43,7 @@ final class ControlPanelController: NSObject, NSWindowDelegate {
 
         hosting = NSHostingView(rootView: ControlPanelView(
             settings: settings, bonjourService: bonjourService, coordinator: coordinator, actions: actions))
-        let glass = NSGlassEffectView()
-        glass.cornerRadius = 20
-        glass.contentView = hosting
-        panel.contentView = glass
+        panel.contentView = hosting
     }
 
     func show(below button: NSStatusBarButton) {
@@ -116,6 +114,48 @@ private final class KeyablePanel: NSPanel {
 
 // MARK: - Content
 
+/// Control Center's grid: 292 pt wide, 140 pt modules, 62 pt rows, 12 pt gaps.
+private enum Grid {
+    static let width: CGFloat = 292
+    static let gap: CGFloat = 12
+    static let row: CGFloat = 62
+    static let half: CGFloat = (width - gap) / 2
+    /// Two round buttons fill one half module exactly.
+    static let circle: CGFloat = (half - gap) / 2
+    /// Secondary text: Control Center's subtitles are a bright grey, not dim.
+    static let subtitle = Color.primary.opacity(0.7)
+}
+
+/// Clear Liquid Glass plus the bright rim Control Center modules have:
+/// strongest along the top-left and bottom-right curves.
+private struct ModuleGlass<S: InsettableShape>: ViewModifier {
+    let shape: S
+    var interactive = true
+
+    func body(content: Content) -> some View {
+        content
+            // The rim is part of the glass's content so it composites on top.
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(stops: [.init(color: .white.opacity(0.85), location: 0),
+                                           .init(color: .white.opacity(0.12), location: 0.4),
+                                           .init(color: .white.opacity(0.12), location: 0.6),
+                                           .init(color: .white.opacity(0.6), location: 1)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
+            // A faint white tint: Control Center's glass brightens what's behind it.
+            .glassEffect(.clear.tint(.white.opacity(0.1)).interactive(interactive), in: shape)
+    }
+}
+
+private extension View {
+    func moduleGlass(_ shape: some InsettableShape, interactive: Bool = true) -> some View {
+        modifier(ModuleGlass(shape: shape, interactive: interactive))
+    }
+}
+
 struct ControlPanelView: View {
     @Bindable var settings: AppSettings
     var bonjourService: BonjourService
@@ -124,66 +164,66 @@ struct ControlPanelView: View {
 
     private var peerReachable: Bool { bonjourService.peerEndpoint != nil }
     private var peerName: String { coordinator.lastPeer?.name ?? bonjourService.peerName ?? "Other Mac" }
-
-    var body: some View {
-        GlassEffectContainer(spacing: 8) {
-            VStack(spacing: 8) {
-                if settings.deviceMACs.isEmpty {
-                    Tile(symbol: "plus", title: "Choose Devices", subtitle: "None selected") {
-                        actions.settings(.devices)
-                    }
-                }
-                ForEach(settings.deviceMACs, id: \.self) { mac in
-                    deviceTile(mac)
-                }
-                if coordinator.isRecovering {
-                    Tile(symbol: "exclamationmark.triangle.fill", title: "Switch the Trackpad Off and On",
-                         subtitle: "It’s still bound to a Mac that went away.", subtitleLines: 2, tint: .orange)
-                }
-
-                HStack(spacing: 8) {
-                    moveTile
-                    Tile(symbol: "arrow.trianglehead.2.clockwise.rotate.90", title: "Automatic",
-                         subtitle: settings.autoHandoff ? "On" : "Off", isOn: settings.autoHandoff) {
-                        settings.autoHandoff.toggle()
-                    }
-                }
-
-                Tile(symbol: DeviceIcon.symbol(forMac: peerName),
-                     title: peerReachable ? peerName : "Other Mac",
-                     subtitle: peerReachable ? peerStatus : "Not found — open the app there",
-                     isOn: peerReachable) {
-                    actions.settings(.network)
-                }
-
-                if !coordinator.lastResult.isEmpty, !coordinator.isRecovering {
-                    Text(coordinator.lastResult)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 6)
-                }
-
-                HStack(spacing: 6) {
-                    Button("Settings…") { actions.settings(.general) }
-                        .buttonStyle(.glass)
-                    Spacer()
-                    Button(action: actions.about) { Image(systemName: "info") }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
-                        .help("About Magic Trackpad Connector")
-                    Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }
-                        .buttonStyle(.glass)
-                        .buttonBorderShape(.circle)
-                        .help("Quit Magic Trackpad Connector")
-                }
-            }
-        }
-        .padding(10)
-        .frame(width: 290)
+    private var canMove: Bool {
+        settings.isConfigured && !coordinator.isBusy && (peerReachable || !coordinator.holdsHere)
     }
 
-    private func deviceTile(_ mac: String) -> some View {
+    var body: some View {
+        // Spacing 0: Control Center's modules sit apart and never morph together.
+        GlassEffectContainer(spacing: 0) {
+            VStack(spacing: Grid.gap) {
+                // Left column of capsules beside the square move tile, like
+                // Wi-Fi / Bluetooth beside Now Playing.
+                HStack(alignment: .top, spacing: Grid.gap) {
+                    VStack(spacing: Grid.gap) {
+                        if let first = settings.deviceMACs.first {
+                            deviceModule(first)
+                        } else {
+                            Module(symbol: "plus", title: "Devices", subtitle: "Choose…") { actions.settings(.devices) }
+                        }
+                        Module(symbol: DeviceIcon.symbol(forMac: peerName), title: "Other Mac",
+                               subtitle: peerReachable ? "\(peerName)\n\(peerStatus)" : "Not Found",
+                               isOn: peerReachable) { actions.settings(.network) }
+                    }
+                    moveModule
+                }
+
+                HStack(spacing: Grid.gap) {
+                    Module(symbol: "arrow.trianglehead.2.clockwise.rotate.90", title: "Automatic",
+                           subtitle: settings.autoHandoff ? "On" : "Off", isOn: settings.autoHandoff) {
+                        settings.autoHandoff.toggle()
+                    }
+                    CircleModule(symbol: "info", help: "About Magic Trackpad Connector", action: actions.about)
+                    CircleModule(symbol: "power", help: "Quit Magic Trackpad Connector") { NSApp.terminate(nil) }
+                }
+
+                let more = Array(settings.deviceMACs.dropFirst())
+                ForEach(Array(stride(from: 0, to: more.count, by: 2)), id: \.self) { i in
+                    HStack(spacing: Grid.gap) {
+                        deviceModule(more[i])
+                        if i + 1 < more.count { deviceModule(more[i + 1]) } else { Spacer(minLength: 0) }
+                    }
+                }
+
+                if coordinator.isRecovering {
+                    WideModule(title: "Switch the Trackpad Off and On",
+                               text: "It’s still bound to a Mac that went away.", symbol: "exclamationmark.triangle.fill")
+                } else if !coordinator.lastResult.isEmpty {
+                    WideModule(title: "Last Transfer", text: coordinator.lastResult, symbol: "clock")
+                }
+
+                Button { actions.settings(.general) } label: {
+                    Text("Settings…").font(.system(size: 12)).foregroundStyle(Grid.subtitle)
+                }
+                .buttonStyle(.glass)
+                .padding(.top, 6) // Control Center sets "Edit Controls" apart from the grid
+            }
+        }
+        .frame(width: Grid.width)
+        .padding(8)
+    }
+
+    private func deviceModule(_ mac: String) -> some View {
         let name = settings.displayName(mac)
         let here = coordinator.connectedHere.contains(mac)
         let status: String
@@ -191,71 +231,147 @@ struct ControlPanelView: View {
         else if here { status = "Connected" }
         else if coordinator.lastPeer?.holds == true { status = "On \(peerName)" }
         else { status = "Not Connected" }
-        return Tile(symbol: DeviceIcon.symbol(forDevice: name), title: name, subtitle: status, isOn: here) {
-            actions.settings(.devices)
-        }
+        return Module(symbol: DeviceIcon.symbol(forDevice: name), title: shortName(name), subtitle: status,
+                      isOn: here) { actions.settings(.devices) }
     }
 
-    private var moveTile: some View {
-        let enabled = settings.isConfigured && !coordinator.isBusy && (peerReachable || !coordinator.holdsHere)
-        return Tile(symbol: coordinator.holdsHere ? "arrow.up.forward" : "arrow.down.backward",
-                    title: coordinator.holdsHere ? "Send" : "Bring Here",
-                    subtitle: coordinator.holdsHere ? peerName : "⌃⌥⌘T",
-                    busy: coordinator.isBusy, action: enabled ? actions.toggle : nil)
-            .help("Send or bring the devices (⌃⌥⌘T)")
-            .opacity(enabled || coordinator.isBusy ? 1 : 0.5)
+    /// "Villegas’s Magic Trackpad" → "Trackpad": a module title is one short
+    /// word, like Control Center's "Wi-Fi" or "Bluetooth".
+    private func shortName(_ name: String) -> String {
+        var name = name
+        for sep in ["’s ", "'s "] {
+            if let r = name.range(of: sep) { name = String(name[r.upperBound...]) }
+        }
+        if name.hasPrefix("Magic ") { name.removeFirst("Magic ".count) }
+        return name
+    }
+
+    /// The square module (Now Playing's slot): the one-click transfer.
+    private var moveModule: some View {
+        let sending = coordinator.holdsHere
+        return Button(action: { if canMove { actions.toggle() } }) {
+            VStack(alignment: .leading, spacing: 0) {
+                IconCircle(symbol: sending ? "arrow.up.forward" : "arrow.down.backward",
+                           isOn: canMove, busy: coordinator.isBusy, size: 40)
+                Spacer(minLength: 0)
+                Text(coordinator.isBusy ? "Moving…" : sending ? "Send to" : "Bring Here")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(sending ? peerName : "from \(peerName)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Grid.subtitle)
+                    .lineLimit(1)
+                Text("⌃⌥⌘T")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 4)
+            }
+            .padding(14)
+            .frame(width: Grid.half, height: Grid.row * 2 + Grid.gap, alignment: .leading)
+            .contentShape(.rect(cornerRadius: 30))
+        }
+        .buttonStyle(.plain)
+        .moduleGlass(.rect(cornerRadius: 30), interactive: canMove)
+        .opacity(canMove || coordinator.isBusy ? 1 : 0.6)
+        .help("Send or bring the devices (⌃⌥⌘T)")
     }
 
     private var peerStatus: String {
         guard let peer = coordinator.lastPeer else { return "Online" }
-        var parts = [peer.available ? "Available" : "Locked or Asleep"]
-        if peer.role == MacRole.primary.rawValue { parts.append("Main") }
-        return parts.joined(separator: " · ")
+        if !peer.available { return "Locked or Asleep" }
+        return peer.role == MacRole.primary.rawValue ? "Main · Available" : "Available"
     }
 }
 
-/// A Control Center module: glass rounded rectangle, round icon on the
-/// left (white when on), title and subtitle.
-private struct Tile: View {
+/// The round icon inside a module: white with an accent glyph when on,
+/// glass-dim with a primary glyph when off (Control Center's Wi-Fi look).
+private struct IconCircle: View {
+    let symbol: String
+    var isOn = false
+    var busy = false
+    var size: CGFloat = 34
+
+    var body: some View {
+        ZStack {
+            Circle().fill(isOn ? AnyShapeStyle(.white) : AnyShapeStyle(.white.opacity(0.12)))
+            if busy {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(isOn ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// A 140 × 62 capsule: icon circle, title, subtitle.
+private struct Module: View {
     let symbol: String
     let title: String
     let subtitle: String
     var isOn = false
-    var subtitleLines = 1
-    var tint: Color = .accentColor
-    var busy = false
-    var action: (() -> Void)?
+    var action: () -> Void
 
     var body: some View {
-        Button {
-            action?()
-        } label: {
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle().fill(isOn ? AnyShapeStyle(.white) : AnyShapeStyle(.white.opacity(0.14)))
-                    if busy {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Image(systemName: symbol)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(isOn ? AnyShapeStyle(tint) : AnyShapeStyle(.primary))
-                    }
-                }
-                .frame(width: 28, height: 28)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(subtitleLines)
+        Button(action: action) {
+            HStack(spacing: 6) {
+                IconCircle(symbol: symbol, isOn: isOn)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(Grid.subtitle).lineLimit(2)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(.rect(cornerRadius: 15))
+            .padding(.leading, 13)
+            .padding(.trailing, 6)
+            .frame(width: Grid.half, height: Grid.row)
+            .contentShape(.capsule)
         }
         .buttonStyle(.plain)
-        .disabled(action == nil && !busy)
-        .glassEffect(.regular.interactive(action != nil), in: .rect(cornerRadius: 15))
+        .moduleGlass(.capsule)
+    }
+}
+
+/// A 62 pt glass circle with a single glyph (the small square controls).
+private struct CircleModule: View {
+    let symbol: String
+    let help: String
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 20, weight: .medium))
+                .frame(width: Grid.circle, height: Grid.circle)
+                .contentShape(.circle)
+        }
+        .buttonStyle(.plain)
+        .moduleGlass(.circle)
+        .help(help)
+    }
+}
+
+/// A full-width module (Display / Sound's slot) for status text.
+private struct WideModule: View {
+    let title: String
+    let text: String
+    let symbol: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 13, weight: .semibold))
+                Text(text).font(.system(size: 11)).foregroundStyle(Grid.subtitle)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(width: Grid.width, alignment: .leading)
+        .frame(minHeight: Grid.row)
+        .moduleGlass(.rect(cornerRadius: 22), interactive: false)
     }
 }
