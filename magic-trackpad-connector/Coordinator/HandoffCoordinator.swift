@@ -40,6 +40,8 @@ final class HandoffCoordinator {
     private var receivingUntil = Date.distantPast
     private var receiveWatchdog: Task<Void, Never>?
     private var lastBackgroundClaim = Date.distantPast
+    /// Set when claims are refused because the device is bound to a vanished host.
+    private var stuckSince: Date?
     private var timer: Timer?
     private var shuttingDown = false
 
@@ -260,16 +262,36 @@ final class HandoffCoordinator {
     }
 
     /// Take devices that nobody holds. Rate-limited when not arriving: a
-    /// switched-off trackpad shouldn't be paged every 15 s forever.
+    /// switched-off trackpad shouldn't be paged every 15 s forever — except in
+    /// recovery mode (device bound to a Mac that is gone), where every cycle
+    /// counts: the device becomes pairable right after the user switches it
+    /// off and on, and we must be paging at that moment.
     private func claimInBackground(reason: String, arriving: Bool) async {
-        if !arriving, Date().timeIntervalSince(lastBackgroundClaim) < 60 { return }
+        let recovering = stuckSince.map { Date().timeIntervalSince($0) < 600 } ?? false
+        if !arriving, !recovering, Date().timeIntervalSince(lastBackgroundClaim) < 60 { return }
         lastBackgroundClaim = Date()
-        Log.write("Policy", "\(reason) — claiming")
+        if !recovering { Log.write("Policy", "\(reason) — claiming") }
         busy = true
         defer { busy = false }
         let macs = settings.deviceMACs
-        _ = await bt.run { [bt] in macs.allSatisfy { Self.claim(bt, $0) } }
+        let (ok, bound) = await bt.run { [bt] in
+            (macs.allSatisfy { Self.claim(bt, $0) }, bt.lastPairRefusedAsBound)
+        }
+        if ok {
+            if stuckSince != nil { Log.write("Policy", "recovered the stuck device") }
+            stuckSince = nil
+        } else if bound, stuckSince == nil {
+            stuckSince = Date()
+            Log.write("Policy", "device is bound to a Mac that is gone — waiting for a power cycle")
+            lastResult = "Trackpad is stuck on a Mac that went away. Switch it off and on to bring it here."
+        }
         await refresh()
+        if !ok, let since = stuckSince, Date().timeIntervalSince(since) < 600 {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                await self?.reconcile(reason: "recovery", arriving: false)
+            }
+        }
     }
 
     // MARK: - Transfer flows

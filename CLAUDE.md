@@ -65,8 +65,10 @@ pairs immediately (Just Works, silent, ~3 s total, no dialogs).
 - A released device stops answering within a few minutes → never release
   unless a receiver is pairing right now; with no reachable peer, sleep/shutdown
   keep the device.
-- A Mac that dies holding the device can't be recovered by the other Mac
-  (`0x02`); the user must cable/power-cycle it.
+- A Mac that dies holding the device keeps it bound (`0x02` for everyone)
+  until the device is switched off/on — then it pairs. Claims refused with
+  `0x02` put the coordinator in recovery mode (`stuckSince`): retry every ~3 s
+  for 10 min and show the power-cycle hint in the menu.
 
 **Networking:** peer connections are **IPv4-only** — the MDM MacBook
 advertises `::1`/`fe80::1` over Bonjour and Network.framework would connect to

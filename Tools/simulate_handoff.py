@@ -13,6 +13,7 @@ Models the trackpad behavior MEASURED on real hardware (REQUIREMENTS.md,
     after connect). Otherwise the host loses its record but the trackpad keeps
     the dead key: stranded, every host gets 0x02 until power-cycle (T6/R3).
   - a host that vanishes keeps the binding; the other host can't pair (E4)
+    until the trackpad is switched off and on, then it pairs (2026-10-28)
 
 Replays the Bluetooth recipes transcribed from
 Coordinator/HandoffCoordinator.swift (release / acquireAfterRelease / claim /
@@ -82,6 +83,15 @@ class World:
             return True
         self.tick(1.0 if self.bound is not None else 14.0)  # 0x02 vs timeout
         return False
+
+    def power_cycle(self):
+        """Measured: switched off/on while its host is gone, the trackpad
+        gives up the dead binding and becomes pairable."""
+        self.tick(5)
+        self.connected = None
+        if self.bound is not None and not self.alive[self.bound]:
+            self.bound = None
+            self.pairable_until = self.t + PAIRABLE_WINDOW
 
     def settle(self, h, old):
         if old:
@@ -195,6 +205,12 @@ def run(old):
     check("vanished owner: other Mac can't claim (expected)", not claim(w, "B", old) and w.bound == "A", f)
     w.alive["A"] = True
     check("vanished owner returns: reclaims with its key", claim(w, "A", old) and w.connected == "A", f)
+
+    w = World("A")  # owner crashes; survivor in recovery mode + user power-cycles
+    w.alive["A"], w.connected = False, None
+    claim(w, "B", old)                       # refused 0x02 -> recovery mode
+    w.power_cycle()
+    check("crashed owner + power cycle: survivor recovers it", claim(w, "B", old) and w.connected == "B", f)
 
     w = World("A")  # claim never strands
     for _ in range(3):
