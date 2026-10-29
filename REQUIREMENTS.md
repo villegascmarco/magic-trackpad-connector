@@ -62,6 +62,8 @@ Later measurements (same day):
 | — | after MacBook reboot | it advertises `::1` / `fe80::1` as its own Bonjour addresses → mini's connections looped to itself → fixed: IPv4-only peer connections + self-loop detection (`from` field) |
 | RT5 | real restart (2nd) | handed off via watchdog, ~19 s; app auto-started at login and left trackpad on mini |
 | RT6 | real restart (3rd, fast shutdown path) | **2.3 s** power-off → trackpad on mini; no steal after boot |
+| RT7 | owner "crashes" (app force-killed + Bluetooth off) holding the trackpad | other Mac enters recovery mode within 14 s (claims refused `0x02`); user switches trackpad off/on → paired automatically ~8 s later, no cable. Returning owner does not steal it back |
+| — | owner Bluetooth off, other Mac retries 60 s without power cycle | stays bound (`0x02`) — one anomalous immediate success in 5 trials |
 | — | both Macs: `pmset -g` | `SleepDisabled 1` — system sleep never happens; lid close / Apple menu Sleep only lock (→ R4 path, RT1) |
 
 ## Status (2026-10-28)
@@ -73,7 +75,7 @@ Later measurements (same day):
 | R6 | by design (no peer → keep device, rate-limited claims) |
 | R10 | no Connection Request dialogs in any run; one-time Bluetooth/Local Network prompt per new build (ad-hoc signing) |
 | R12 | implemented (Settings device list, devices move as a group); untested — no Magic Keyboard/Mouse available |
-| Known limit | a Mac that crashes / loses power while holding the device strands it until cable/power-cycle (E4) |
+| Crash / power loss | a Mac that dies holding the device: the other Mac shows "switch it off and on" and retries every ~3 s for 10 min; one power cycle recovers it (RT7). Fully automatic recovery is impossible — the device stays bound to the dead host until power-cycled |
 
 ## Verification
 

@@ -136,6 +136,14 @@ nonisolated final class BluetoothManager: NSObject, @unchecked Sendable {
 
     /// Host-initiated pairing (Just Works SSP for Magic devices: no PIN, no
     /// prompt). Spins this thread's run loop until the delegate reports.
+    /// Result of the most recent pair() (Bluetooth thread only).
+    private(set) var lastPairResult: IOReturn = kIOReturnSuccess
+
+    /// 0x02 (No Connection): the device refuses because it is still bound to
+    /// another host. Measured: a host that vanished keeps the device bound
+    /// until the device is switched off and on, after which it pairs.
+    var lastPairRefusedAsBound: Bool { lastPairResult == 0x02 }
+
     @discardableResult
     func pair(_ mac: String, timeout: TimeInterval = 20) -> IOReturn {
         guard let d = device(mac) else { return kIOReturnNoDevice }
@@ -152,6 +160,7 @@ nonisolated final class BluetoothManager: NSObject, @unchecked Sendable {
             if delegate.result == nil { pairing.stop() }
             rc = delegate.result ?? kIOReturnTimeout
         }
+        lastPairResult = rc
         Log.write("BT", "pair \(mac) -> \(Self.describe(rc)) paired=\(d.isPaired()) connected=\(d.isConnected())")
         return rc
     }
