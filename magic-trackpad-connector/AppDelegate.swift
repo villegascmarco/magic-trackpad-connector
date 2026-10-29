@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fillMissingNames(settings)
 
         Wire.myName = settings.thisMachineName
+        Wire.setPairingCode(settings.pairingCode)
         bonjourService = BonjourService(settings: settings)
         systemEvents = SystemEvents()
         coordinator = HandoffCoordinator(settings: settings, bonjour: bonjourService, events: systemEvents)

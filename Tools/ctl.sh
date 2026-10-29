@@ -2,6 +2,8 @@
 # Send one JSON request to the app's loopback control port and print the reply.
 #   Tools/ctl.sh '{"action":"status"}'               # this Mac
 #   Tools/ctl.sh -r mbp '{"action":"log","count":40}' # another Mac via ssh
+#   Tools/ctl.sh '{"action":"config","pairingCode":"…"}'  # same code on both Macs
+# Loopback requests are plain JSON; only Mac-to-Mac traffic is signed.
 # Local-only actions: push pull toggle reconcile event auto config log bt
 PORT="${MTC_PORT:-7890}"
 if [[ "$1" == "-r" ]]; then

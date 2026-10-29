@@ -77,7 +77,18 @@ our own loopback. Every response carries `from` (responder name); a reply
 from ourselves is treated as unreachable.
 
 **Peer protocol:** `{"action": "status"|"prepare"|"receive"|"release"|"cancel", "devices": [...]}`
-→ `{"status": "ok"|"error", "from": name, …}`. After `prepare`, a watchdog
+→ `{"status": "ok"|"error", "from": name, …}`. Between Macs every message is
+sealed with the shared **pairing code** (Settings → Network, or `config`
+`pairingCode`): `{"body": "<JSON>", "mac": "<hex HMAC-SHA256>"}`, key =
+HKDF-SHA256(code, salt `mtconnector-v1`, ≥12 letters/digits); requests add
+`ts`/`nonce` (±120 s, no replays — seen nonces persist across relaunch) and
+`from` (a Mac refuses its own requests reflected back), replies echo `re`.
+Lines are capped at 64 KB, reads at 2 s, open network connections at 4 per
+host / 16 total (loopback unlimited; IPv6 from the network is refused). A plain
+refusal (`rejected`) aborts a manual pull instead of claiming. The server refuses anything else from the
+network (plain `{"status":"error"}`, handler never runs); loopback (ctl.sh)
+stays plain. No code set → `sendToPeer` throws `notPaired` and the policy
+treats the peer as unreachable. After `prepare`, a watchdog
 pairs immediately if the sender vanishes or `receive` never comes (shutdown
 kills the app within seconds of the unplug). `status` returns `holds`, `available`
 (awake+unlocked), `idle`, `busy`, `role`. A Mac with no devices configured

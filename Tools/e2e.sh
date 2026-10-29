@@ -14,6 +14,14 @@ pass=0; fail=0
 L() { Tools/ctl.sh "$1"; }
 R() { Tools/ctl.sh -r "$PEER" "$1"; }
 connected() { grep -q '"connected":true'; }
+# Peer requests are signed with the pairing code; both Macs need the same one.
+for side in L R; do
+  $side '{"action":"config"}' | grep -q '"paired":true' || {
+    echo "set the same pairing code on both Macs first (Settings → Network, or"
+    echo "  Tools/ctl.sh [-r $PEER] '{\"action\":\"config\",\"pairingCode\":\"…\"}')"; exit 1; }
+done
+L '{"action":"config"}' | grep -q '"peerLinked":true' || {
+  echo "the other Mac refuses our requests — are the pairing codes identical?"; exit 1; }
 where() {
   local a b
   L '{"action":"bt","op":"state"}' | connected && a=1 || a=0

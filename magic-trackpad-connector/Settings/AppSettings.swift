@@ -43,6 +43,22 @@ final class AppSettings {
         didSet { defaults.set(serverPort, forKey: "serverPort") }
     }
 
+    /// Shared secret both Macs sign their requests with; empty = not paired.
+    var pairingCode: String {
+        didSet {
+            defaults.set(pairingCode, forKey: "pairingCode")
+            Wire.setPairingCode(pairingCode)
+        }
+    }
+
+    var isPaired: Bool { !Wire.normalizePairingCode(pairingCode).isEmpty }
+
+    /// 24 characters from an alphabet without look-alikes (~120 bits).
+    static func generatePairingCode() -> String {
+        let alphabet = Array("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+        return (0..<6).map { _ in String((0..<4).map { _ in alphabet.randomElement()! }) }.joined(separator: "-")
+    }
+
     var isConfigured: Bool { !deviceMACs.isEmpty }
 
     func displayName(_ mac: String) -> String {
@@ -67,6 +83,7 @@ final class AppSettings {
             ?? ProcessInfo.processInfo.hostName
         peerHost = defaults.string(forKey: "peerHost") ?? ""
         serverPort = defaults.integer(forKey: "serverPort").nonZero ?? 7890
+        pairingCode = defaults.string(forKey: "pairingCode") ?? ""
     }
 }
 

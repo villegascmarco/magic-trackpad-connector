@@ -182,8 +182,9 @@ struct ControlPanelView: View {
                             Module(symbol: "plus", title: "Devices", subtitle: "Choose…") { actions.settings(.devices) }
                         }
                         Module(symbol: DeviceIcon.symbol(forMac: peerName), title: "Other Mac",
-                               subtitle: peerReachable ? "\(peerName)\n\(peerStatus)" : "Not Found",
-                               isOn: peerReachable) { actions.settings(.network) }
+                               subtitle: !settings.isPaired ? "Not Paired"
+                                   : peerReachable ? "\(peerName)\n\(peerStatus)" : "Not Found",
+                               isOn: peerReachable && settings.isPaired) { actions.settings(.network) }
                     }
                     moveModule
                 }
@@ -235,7 +236,7 @@ struct ControlPanelView: View {
                       isOn: here) { actions.settings(.devices) }
     }
 
-    /// "Villegas’s Magic Trackpad" → "Trackpad": a module title is one short
+    /// "Alex’s Magic Trackpad" → "Trackpad": a module title is one short
     /// word, like Control Center's "Wi-Fi" or "Bluetooth".
     private func shortName(_ name: String) -> String {
         var name = name
@@ -276,7 +277,7 @@ struct ControlPanelView: View {
     }
 
     private var peerStatus: String {
-        guard let peer = coordinator.lastPeer else { return "Online" }
+        guard let peer = coordinator.lastPeer else { return coordinator.peerRefused ? "Pairing Code Doesn’t Match" : "Online" }
         if !peer.available { return "Locked or Asleep" }
         return peer.role == MacRole.primary.rawValue ? "Main · Available" : "Available"
     }

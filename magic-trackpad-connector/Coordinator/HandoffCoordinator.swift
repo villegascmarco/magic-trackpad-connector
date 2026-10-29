@@ -40,6 +40,8 @@ final class HandoffCoordinator {
     /// Managed devices whose link to this Mac is up (for per-device UI).
     private(set) var connectedHere: Set<String> = []
     private(set) var lastPeer: PeerState?
+    /// The peer answered but refused our signature (different pairing code).
+    private(set) var peerRefused = false
     private(set) var lastResult: String = ""
     /// A transfer this Mac is running or taking part in.
     private(set) var busy = false
@@ -159,9 +161,11 @@ final class HandoffCoordinator {
                                   busy: r["busy"] as? Bool ?? false,
                                   role: r["role"] as? String ?? "")
             lastPeer = state
+            peerRefused = false
             return state
         } catch {
             lastPeer = nil
+            if case .rejected? = error as? PeerClientError { peerRefused = true } else { peerRefused = false }
             return nil
         }
     }
@@ -400,6 +404,9 @@ final class HandoffCoordinator {
                 released = r["released"] as? [String] ?? []
             } catch PeerClientError.failed(let message) {
                 return .failure(.init(message: "The other Mac refused to release the devices: \(message)"))
+            } catch let error as PeerClientError where error.isRejection {
+                // It's there but won't talk to us: claiming would fail with 0x02.
+                return .failure(.init(message: error.localizedDescription))
             } catch {
                 Log.write("Flow", "pull(\(reason)): peer unreachable — claiming directly")
             }
@@ -594,8 +601,10 @@ final class HandoffCoordinator {
             if let macs = request["devices"] as? [String] { settings.deviceMACs = macs.map(BluetoothManager.normalize) }
             if let role = (request["role"] as? String).flatMap(MacRole.init) { settings.role = role }
             if let host = request["peerHost"] as? String { settings.peerHost = host }
+            if let code = request["pairingCode"] as? String { settings.pairingCode = code }
             return ok(["devices": settings.deviceMACs, "role": settings.role.rawValue, "peerHost": settings.peerHost,
-                       "auto": settings.autoHandoff, "peer": bonjour.peerName ?? NSNull()])
+                       "auto": settings.autoHandoff, "paired": settings.isPaired, "peer": bonjour.peerName ?? NSNull(),
+                       "peerLinked": await peerState() != nil])
         case "log":
             return ok(["lines": Log.tail(request["count"] as? Int ?? 100)])
         case "ui":

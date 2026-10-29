@@ -135,8 +135,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.sectionHeader(title: "Other Mac"))
         let peer = item(peerReachable ? peerName : "Not Found", action: #selector(openNetwork))
-        peer.image = DeviceIcon.badge(DeviceIcon.symbol(forMac: peerName), active: peerReachable)
-        peer.subtitle = peerReachable ? peerStatus : "Open the app on your other Mac."
+        peer.image = DeviceIcon.badge(DeviceIcon.symbol(forMac: peerName), active: peerReachable && settings.isPaired)
+        peer.subtitle = !settings.isPaired ? "Set a pairing code in Settings."
+            : peerReachable ? peerStatus : "Open the app on your other Mac."
         menu.addItem(peer)
         if !coordinator.lastResult.isEmpty, !coordinator.isRecovering {
             let last = item(coordinator.lastResult)
@@ -161,7 +162,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private var peerStatus: String {
-        guard let peer = coordinator.lastPeer else { return "Online" }
+        guard let peer = coordinator.lastPeer else { return coordinator.peerRefused ? "Pairing Code Doesn’t Match" : "Online" }
         var parts = [peer.available ? "Available" : "Locked or Asleep"]
         if peer.role == MacRole.primary.rawValue { parts.append("Main Mac") }
         return parts.joined(separator: " · ")

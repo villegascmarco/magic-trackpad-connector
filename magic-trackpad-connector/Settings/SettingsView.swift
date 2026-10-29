@@ -210,6 +210,22 @@ private struct NetworkPane: View {
             }
 
             Section {
+                LabeledContent("Pairing Code") {
+                    HStack {
+                        TextField("Pairing Code", text: $settings.pairingCode, prompt: Text("Required"))
+                            .labelsHidden()
+                            .monospaced()
+                        Button("Generate") { settings.pairingCode = AppSettings.generatePairingCode() }
+                    }
+                }
+            } header: {
+                Text("Pairing")
+            } footer: {
+                Text("Both Macs must use the same code of at least 12 letters or digits: generate one here and type it on the other Mac. Requests without it are ignored, so other computers on the network can’t move your devices.")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
                 TextField("Fallback Address", text: $settings.peerHost, prompt: Text("other-mac.local"))
                 TextField("Port", value: port, format: .number.grouping(.never))
             } header: {
