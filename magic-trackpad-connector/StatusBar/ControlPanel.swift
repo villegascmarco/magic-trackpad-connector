@@ -43,7 +43,7 @@ final class ControlPanelController: NSObject, NSWindowDelegate {
         hosting = NSHostingView(rootView: ControlPanelView(
             settings: settings, bonjourService: bonjourService, coordinator: coordinator, actions: actions))
         let glass = NSGlassEffectView()
-        glass.cornerRadius = 26
+        glass.cornerRadius = 20
         glass.contentView = hosting
         panel.contentView = glass
     }
@@ -126,8 +126,8 @@ struct ControlPanelView: View {
     private var peerName: String { coordinator.lastPeer?.name ?? bonjourService.peerName ?? "Other Mac" }
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            VStack(spacing: 10) {
+        GlassEffectContainer(spacing: 8) {
+            VStack(spacing: 8) {
                 if settings.deviceMACs.isEmpty {
                     Tile(symbol: "plus", title: "Choose Devices", subtitle: "None selected") {
                         actions.settings(.devices)
@@ -141,7 +141,7 @@ struct ControlPanelView: View {
                          subtitle: "It’s still bound to a Mac that went away.", subtitleLines: 2, tint: .orange)
                 }
 
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     moveTile
                     Tile(symbol: "arrow.trianglehead.2.clockwise.rotate.90", title: "Automatic",
                          subtitle: settings.autoHandoff ? "On" : "Off", isOn: settings.autoHandoff) {
@@ -164,7 +164,7 @@ struct ControlPanelView: View {
                         .padding(.horizontal, 6)
                 }
 
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Button("Settings…") { actions.settings(.general) }
                         .buttonStyle(.glass)
                     Spacer()
@@ -177,11 +177,10 @@ struct ControlPanelView: View {
                         .buttonBorderShape(.circle)
                         .help("Quit Magic Trackpad Connector")
                 }
-                .controlSize(.large)
             }
         }
-        .padding(12)
-        .frame(width: 340)
+        .padding(10)
+        .frame(width: 290)
     }
 
     private func deviceTile(_ mac: String) -> some View {
@@ -231,31 +230,32 @@ private struct Tile: View {
         Button {
             action?()
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ZStack {
                     Circle().fill(isOn ? AnyShapeStyle(.white) : AnyShapeStyle(.white.opacity(0.14)))
                     if busy {
-                        ProgressView().controlSize(.small)
+                        ProgressView().controlSize(.mini)
                     } else {
                         Image(systemName: symbol)
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(isOn ? AnyShapeStyle(tint) : AnyShapeStyle(.primary))
                     }
                 }
-                .frame(width: 36, height: 36)
+                .frame(width: 28, height: 28)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                    Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(subtitleLines)
+                    Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(subtitleLines)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 60)
-            .contentShape(.rect(cornerRadius: 20))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(.rect(cornerRadius: 15))
         }
         .buttonStyle(.plain)
         .disabled(action == nil && !busy)
-        .glassEffect(.regular.interactive(action != nil), in: .rect(cornerRadius: 20))
+        .glassEffect(.regular.interactive(action != nil), in: .rect(cornerRadius: 15))
     }
 }
