@@ -223,7 +223,9 @@ final class HandoffCoordinator {
             Log.write("Flow", "sender vanished mid-handoff — acquiring")
             self.busy = true
             let macs = self.settings.deviceMACs
-            _ = await self.bt.run { [bt = self.bt] in macs.allSatisfy { Self.acquireAfterRelease(bt, $0) } }
+            // claim, not acquireAfterRelease: we don't know which devices were
+            // released, and dropping the record of one that wasn't would strand it.
+            _ = await self.bt.run { [bt = self.bt] in Self.each(macs) { Self.claim(bt, $0) } }
             self.busy = false
             self.receivingUntil = .distantPast
             await self.refresh()
@@ -275,7 +277,7 @@ final class HandoffCoordinator {
         defer { busy = false }
         let macs = settings.deviceMACs
         let (ok, bound) = await bt.run { [bt] in
-            (macs.allSatisfy { Self.claim(bt, $0) }, bt.lastPairRefusedAsBound)
+            (Self.each(macs) { Self.claim(bt, $0) }.failed.isEmpty, bt.lastPairRefusedAsBound)
         }
         if ok {
             if stuckSince != nil { Log.write("Policy", "recovered the stuck device") }
@@ -324,26 +326,34 @@ final class HandoffCoordinator {
         Log.write("Flow", "push(\(reason)): releasing")
         let macs = settings.deviceMACs
         let confirm = reason != "shutdown"
-        let released = await bt.run { [bt] in macs.allSatisfy { Self.release(bt, $0, confirm: confirm) } }
+        // Devices move independently: one that is off or out of range must
+        // not block (or roll back) the others.
+        let (released, refused) = await bt.run { [bt] in Self.releaseConnected(bt, macs, confirm: confirm) }
         if confirm { await refresh() }
-        if !released {
-            Log.write("Flow", "push(\(reason)): release refused — aborting")
+        if released.isEmpty {
             _ = try? await sendToPeer(["action": "cancel"], endpoint: endpoint, timeout: 3)
+            if refused.isEmpty { return .failure(.init(message: "None of the devices is connected to this Mac.")) }
+            Log.write("Flow", "push(\(reason)): release refused — aborting")
             return .failure(.init(message: "This Mac couldn't release the devices safely, so nothing was moved. Try again in a few seconds."))
         }
         if abandon { return .success("Released without sending receive (test).") }
 
+        var failed = released
         do {
-            _ = try await sendToPeer(["action": "receive", "devices": macs], endpoint: endpoint, timeout: 90)
-            Log.write("Flow", "push(\(reason)): done")
-            return .success("Sent to \(bonjour.peerName ?? "the other Mac").")
+            let r = try await sendToPeer(["action": "receive", "devices": released], endpoint: endpoint, timeout: 120)
+            failed = r["failed"] as? [String] ?? []
         } catch {
-            Log.write("Flow", "push(\(reason)): receiver failed (\(error.localizedDescription)) — taking devices back")
-            let recovered = await bt.run { [bt] in macs.allSatisfy { Self.acquireAfterRelease(bt, $0) } }
-            await refresh()
-            return .failure(.init(message: "The other Mac couldn't connect the devices: \(error.localizedDescription)\n"
-                                  + (recovered ? "They were reconnected here." : "Reconnecting here failed too; the main Mac will keep retrying.")))
+            Log.write("Flow", "push(\(reason)): receiver unreachable (\(error.localizedDescription))")
         }
+        if failed.isEmpty {
+            Log.write("Flow", "push(\(reason)): done \(released)" + (refused.isEmpty ? "" : ", kept \(refused)"))
+            return .success("Sent to \(bonjour.peerName ?? "the other Mac").")
+        }
+        Log.write("Flow", "push(\(reason)): receiver failed \(failed) — taking them back")
+        let recovered = await bt.run { [bt] in Self.each(failed) { Self.acquireAfterRelease(bt, $0) } }
+        await refresh()
+        return .failure(.init(message: "The other Mac couldn't connect \(failed.map(settings.displayName).joined(separator: ", ")).\n"
+                              + (recovered.failed.isEmpty ? "Reconnected here instead." : "Reconnecting here failed too; the main Mac will keep retrying.")))
     }
 
     func pull(reason: String) async -> Result<String, TransferError> {
@@ -353,11 +363,11 @@ final class HandoffCoordinator {
         defer { busy = false }
 
         let macs = settings.deviceMACs
-        var peerReleased = false
+        var released: [String] = []
         if let endpoint = bonjour.peerEndpoint {
             do {
-                _ = try await sendToPeer(["action": "release", "devices": macs], endpoint: endpoint, timeout: 30)
-                peerReleased = true
+                let r = try await sendToPeer(["action": "release", "devices": macs], endpoint: endpoint, timeout: 60)
+                released = r["released"] as? [String] ?? []
             } catch PeerClientError.failed(let message) {
                 return .failure(.init(message: "The other Mac refused to release the devices: \(message)"))
             } catch {
@@ -365,18 +375,40 @@ final class HandoffCoordinator {
             }
         }
 
-        Log.write("Flow", "pull(\(reason)): acquiring (peer released: \(peerReleased))")
-        let ok = await bt.run { [bt] in
-            macs.allSatisfy { peerReleased ? Self.acquireAfterRelease(bt, $0) : Self.claim(bt, $0) }
+        // Devices the peer released are paired fresh; the rest (nobody had
+        // them, or the peer is gone) are claimed with our own key if we can.
+        Log.write("Flow", "pull(\(reason)): acquiring (peer released \(released))")
+        let result = await bt.run { [bt] in
+            Self.each(macs) { released.contains($0) ? Self.acquireAfterRelease(bt, $0) : Self.claim(bt, $0) }
         }
         await refresh()
-        if ok { return .success("Connected here.") }
-        return .failure(.init(message: peerReleased
+        // Success: everything the peer let go of arrived, and something is here
+        // (absent devices that nobody released don't count as failures).
+        if !result.done.isEmpty, released.allSatisfy(result.done.contains) {
+            return .success("Connected here.")
+        }
+        return .failure(.init(message: !released.isEmpty
             ? "The other Mac released the devices but this Mac couldn't connect them. The main Mac will keep retrying."
             : "Couldn't connect. If the other Mac crashed or lost power while holding the trackpad, switch the trackpad off and on, then try again."))
     }
 
     // MARK: - Bluetooth recipes (run on the Bluetooth thread)
+
+    /// Run `body` for every device (no short-circuit) and split the results.
+    nonisolated static func each(_ macs: [String], _ body: (String) -> Bool) -> (done: [String], failed: [String]) {
+        var done: [String] = [], failed: [String] = []
+        for mac in macs { body(mac) ? done.append(mac) : failed.append(mac) }
+        return (done, failed)
+    }
+
+    /// Release every managed device that is connected here. Devices that are
+    /// off or elsewhere are left alone (not reported as refused).
+    nonisolated static func releaseConnected(_ bt: BluetoothManager, _ macs: [String],
+                                             confirm: Bool) -> (released: [String], refused: [String]) {
+        let present = macs.filter { bt.isConnected($0) }
+        let r = each(present) { release(bt, $0, confirm: confirm) }
+        return (r.done, r.failed)
+    }
 
     /// Sender side: unpair while the link is up so the device receives the
     /// Virtual Cable Unplug, forgets this Mac and becomes pairable.
@@ -471,22 +503,24 @@ final class HandoffCoordinator {
             receiveWatchdog?.cancel()
             busy = true
             defer { busy = false; receivingUntil = .distantPast }
-            let macs = settings.deviceMACs
-            let success = await bt.run { [bt] in macs.allSatisfy { Self.acquireAfterRelease(bt, $0) } }
+            let macs = (request["devices"] as? [String])?.map(BluetoothManager.normalize) ?? settings.deviceMACs
+            let result = await bt.run { [bt] in Self.each(macs) { Self.acquireAfterRelease(bt, $0) } }
             await refresh()
-            lastResult = success ? "Received from \(bonjour.peerName ?? "the other Mac")." : "Receiving failed."
-            return success ? ok() : error("pairing failed on \(settings.thisMachineName)")
+            lastResult = result.failed.isEmpty ? "Received from \(bonjour.peerName ?? "the other Mac")." : "Receiving failed."
+            return ok(["acquired": result.done, "failed": result.failed])
 
         case "release":
             guard !busy else { return error("busy") }
             busy = true
             defer { busy = false }
             let macs = settings.deviceMACs
-            let released = await bt.run { [bt] in macs.allSatisfy { Self.release(bt, $0) } }
+            let (released, refused) = await bt.run { [bt] in Self.releaseConnected(bt, macs, confirm: true) }
             await refresh()
-            guard released else { return error("couldn't release the devices safely on \(settings.thisMachineName)") }
-            lastResult = "Released to \(bonjour.peerName ?? "the other Mac")."
-            return ok()
+            if released.isEmpty, !refused.isEmpty {
+                return error("couldn't release the devices safely on \(settings.thisMachineName)")
+            }
+            if !released.isEmpty { lastResult = "Released to \(bonjour.peerName ?? "the other Mac")." }
+            return ok(["released": released, "refused": refused])
 
         case "cancel":
             receiveWatchdog?.cancel()
