@@ -62,6 +62,7 @@ Later measurements (same day):
 | — | after MacBook reboot | it advertises `::1` / `fe80::1` as its own Bonjour addresses → mini's connections looped to itself → fixed: IPv4-only peer connections + self-loop detection (`from` field) |
 | RT5 | real restart (2nd) | handed off via watchdog, ~19 s; app auto-started at login and left trackpad on mini |
 | RT6 | real restart (3rd, fast shutdown path) | **2.3 s** power-off → trackpad on mini; no steal after boot |
+| RT8 | real **lid close** on MacBook (built-in display only) holding the trackpad | lid close → screen lock → trackpad on mini ~4 s later; after reopening/unlocking, it stayed on the mini |
 | RT7 | owner "crashes" (app force-killed + Bluetooth off) holding the trackpad | other Mac enters recovery mode within 14 s (claims refused `0x02`); user switches trackpad off/on → paired automatically ~8 s later, no cable. Returning owner does not steal it back |
 | — | owner Bluetooth off, other Mac retries 60 s without power cycle | stays bound (`0x02`) — one anomalous immediate success in 5 trials |
 | — | both Macs: `pmset -g` | `SleepDisabled 1` — system sleep never happens; lid close / Apple menu Sleep only lock (→ R4 path, RT1) |
@@ -71,7 +72,7 @@ Later measurements (same day):
 | ID | Status |
 |---|---|
 | R1, R2, R3, R4, R7, R8, R9, R11, R13 | verified on hardware |
-| R5 | shutdown/restart verified on hardware (RT5, RT6: 2.3 s). Lid close / Sleep on these Macs = lock (sleep disabled by `pmset`), verified via R4 (RT1). The sleep-hold path (IOKit, ≤25 s) only runs if sleep is re-enabled; covered by simulated events only |
+| R5 | shutdown/restart verified on hardware (RT5, RT6: 2.3 s). Lid close on these Macs = lock (sleep disabled by `pmset`) — real lid close verified (RT8, ~4 s); Apple menu Sleep likewise (RT1). The sleep-hold path (IOKit, ≤25 s) only runs if sleep is re-enabled; covered by simulated events only |
 | R6 | by design (no peer → keep device, rate-limited claims) |
 | R10 | no Connection Request dialogs in any run; one-time Bluetooth/Local Network prompt per new build (ad-hoc signing) |
 | R12 | implemented (Settings device list, devices move as a group); untested — no Magic Keyboard/Mouse available |
