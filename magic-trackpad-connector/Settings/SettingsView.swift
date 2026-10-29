@@ -4,114 +4,101 @@ struct SettingsView: View {
     @Bindable var settings: AppSettings
     var bonjourService: BonjourService
 
-    @State private var availableTrackpads: [(mac: String, name: String)] = []
-    @State private var isScanning = false
-    @State private var scanError: String?
+    @State private var paired: [BluetoothManager.PairedDevice] = []
     @State private var portString: String = ""
+
+    /// Managed devices plus anything paired here, so a device that currently
+    /// lives on the other Mac still shows up (checked).
+    private var rows: [(mac: String, name: String)] {
+        var seen = Set<String>()
+        var result: [(String, String)] = []
+        for mac in settings.deviceMACs where seen.insert(mac).inserted {
+            result.append((mac, paired.first { $0.mac == mac }?.name ?? settings.displayName(mac)))
+        }
+        for device in paired where seen.insert(device.mac).inserted {
+            result.append((device.mac, device.name))
+        }
+        return result
+    }
 
     var body: some View {
         Form {
-            Section("Trackpad") {
-                if settings.isTrackpadConfigured {
-                    LabeledContent("Detected") {
-                        Label(settings.trackpadName.isEmpty ? settings.trackpadMAC : settings.trackpadName,
-                              systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                    if availableTrackpads.count > 1 {
-                        Picker("Switch to", selection: $settings.trackpadMAC) {
-                            ForEach(availableTrackpads, id: \.mac) { device in
-                                Text(device.name).tag(device.mac)
-                            }
-                        }
-                        .onChange(of: settings.trackpadMAC) { _, mac in
-                            settings.trackpadName = availableTrackpads.first { $0.mac == mac }?.name ?? ""
+            Section("Devices to move between Macs") {
+                if rows.isEmpty {
+                    Text("No paired Bluetooth devices found.").foregroundStyle(.secondary)
+                }
+                ForEach(rows, id: \.mac) { row in
+                    Toggle(isOn: binding(for: row.mac, name: row.name)) {
+                        VStack(alignment: .leading) {
+                            Text(row.name)
+                            Text(row.mac).font(.caption).foregroundStyle(.secondary)
                         }
                     }
-                } else {
-                    LabeledContent("Trackpad") {
-                        Label("Not found", systemImage: "xmark.circle")
-                            .foregroundStyle(.red)
-                    }
                 }
-
-                if let error = scanError {
-                    Text(error).foregroundStyle(.red).font(.caption)
-                }
-
-                Button(isScanning ? "Connecting…" : "Re-detect & Connect") {
-                    Task { await scanAndConnect() }
-                }
-                .disabled(isScanning)
+                Text("Magic Trackpad, Keyboard and Mouse work. Devices that pair with several hosts on their own (AirPods) don't need this app.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("This Machine") {
-                LabeledContent("Name") {
-                    TextField("", text: $settings.thisMachineName,
-                              prompt: Text("My Mac").foregroundColor(.secondary))
-                        .multilineTextAlignment(.trailing)
+            Section("This Mac") {
+                Picker("Role", selection: $settings.role) {
+                    Text("Main (orchestrator)").tag(MacRole.primary)
+                    Text("Secondary").tag(MacRole.secondary)
                 }
-                Text("This name identifies this Mac to the other Mac.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("The main Mac takes the devices whenever no one else has them — e.g. after a failed transfer. Set exactly one Mac as Main.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Automatic handoff (lock, sleep, shutdown, startup)", isOn: $settings.autoHandoff)
+                LabeledContent("Name") {
+                    TextField("", text: $settings.thisMachineName).multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Toggle hotkey") { Text("⌃⌥⌘T") }
             }
 
             Section("Network") {
-                LabeledContent("Port") {
-                    TextField("", text: $portString,
-                              prompt: Text("7890").foregroundColor(.secondary))
-                        .frame(width: 60)
-                        .multilineTextAlignment(.trailing)
-                        .onChange(of: portString) { _, newValue in
-                            if let v = Int(newValue), v > 0 { settings.serverPort = v }
-                        }
-                }
-                LabeledContent("Peer") {
-                    if bonjourService.isPeerOnline, let name = bonjourService.peerName {
+                LabeledContent("Other Mac") {
+                    if let name = bonjourService.peerName {
                         Label(name, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     } else {
-                        Label("Not found — launch app on the other Mac", systemImage: "xmark.circle")
+                        Label("Not found — run the app there too", systemImage: "xmark.circle")
                             .foregroundStyle(.secondary)
                     }
                 }
+                LabeledContent("Fallback host") {
+                    TextField("", text: $settings.peerHost, prompt: Text("other-mac.local"))
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Port") {
+                    TextField("", text: $portString, prompt: Text("7890"))
+                        .frame(width: 60)
+                        .multilineTextAlignment(.trailing)
+                        .onChange(of: portString) { _, value in
+                            if let v = Int(value), v > 0 { settings.serverPort = v }
+                        }
+                }
+                Text("Port changes apply after relaunch. Both Macs must use the same port.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 400, minHeight: 300)
-        .padding()
+        .frame(width: 460, height: 560)
         .onAppear {
             portString = String(settings.serverPort)
-            Task { await scanTrackpads() }
-        }
-    }
-
-    private func scanAndConnect() async {
-        await scanTrackpads()
-        // After scanning/detecting, attempt to connect to this Mac
-        let bt = BluetoothManager.shared
-        let mac = settings.trackpadMAC
-        guard !mac.isEmpty else { return }
-        await Task.detached(priority: .userInitiated) { try? bt.connect(mac: mac) }.value
-    }
-
-    private func scanTrackpads() async {
-        isScanning = true
-        scanError = nil
-        defer { isScanning = false }
-        let bt = BluetoothManager.shared
-        do {
-            let all = try await Task.detached(priority: .userInitiated) {
-                try bt.pairedDevices()
-            }.value
-            availableTrackpads = all.filter { $0.name.localizedCaseInsensitiveContains("trackpad") }
-            if availableTrackpads.isEmpty {
-                scanError = "No Magic Trackpad found in paired devices."
-            } else if !settings.isTrackpadConfigured, let first = availableTrackpads.first {
-                settings.trackpadMAC = first.mac
-                settings.trackpadName = first.name
+            Task {
+                paired = await BluetoothManager.shared.run { BluetoothManager.shared.pairedDevices() }
             }
-        } catch {
-            scanError = error.localizedDescription
         }
+    }
+
+    private func binding(for mac: String, name: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.deviceMACs.contains(mac) },
+            set: { on in
+                if on {
+                    if !settings.deviceMACs.contains(mac) { settings.deviceMACs.append(mac) }
+                    settings.deviceNames[mac] = name
+                } else {
+                    settings.deviceMACs.removeAll { $0 == mac }
+                }
+            }
+        )
     }
 }

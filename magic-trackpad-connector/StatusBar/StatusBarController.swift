@@ -5,120 +5,115 @@ import SwiftUI
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let settings: AppSettings
     private let bonjourService: BonjourService
-    private let coordinator: ToggleCoordinator
+    private let coordinator: HandoffCoordinator
 
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
 
-    init(settings: AppSettings, bonjourService: BonjourService, coordinator: ToggleCoordinator) {
+    init(settings: AppSettings, bonjourService: BonjourService, coordinator: HandoffCoordinator) {
         self.settings = settings
         self.bonjourService = bonjourService
         self.coordinator = coordinator
         super.init()
-        setupStatusItem()
-        coordinator.onStatusChanged = { [weak self] in self?.updateIcon() }
-        bonjourService.onPeerChanged = { [weak self] in self?.updateIcon() }
-        coordinator.startPolling()
-    }
-
-    private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        updateIcon()
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
+        coordinator.onChange = { [weak self] in self?.updateIcon() }
+        bonjourService.onPeerChanged = { [weak self] in self?.updateIcon() }
+        updateIcon()
     }
 
     func updateIcon() {
         guard let button = statusItem.button else { return }
-        let connected = coordinator.isTrackpadConnected
-        // Try preferred symbol first, fall back to simpler guaranteed ones, then plain text.
-        let candidates = connected
-            ? ["dot.radiowaves.left.and.right", "wifi", "antenna.radiowaves.left.and.right"]
-            : ["dot.radiowaves.left.and.right.slash", "wifi.slash", "wifi.exclamationmark"]
-        if let symbolName = candidates.first(where: { NSImage(systemSymbolName: $0, accessibilityDescription: nil) != nil }),
-           let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
-            image.isTemplate = true
-            button.image = image
-            button.title = ""
+        let symbol: String
+        if coordinator.isBusy {
+            symbol = "arrow.left.arrow.right"
+        } else if coordinator.holdsHere {
+            symbol = "rectangle.and.hand.point.up.left.fill"
         } else {
-            button.image = nil
-            button.title = connected ? "⌨︎" : "⌨︎?"
+            symbol = "rectangle.and.hand.point.up.left"
         }
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Magic Trackpad Connector")
+            ?? NSImage(systemSymbolName: "rectangle", accessibilityDescription: nil)
+        image?.isTemplate = true
+        button.image = image
+        button.appearsDisabled = !coordinator.holdsHere && !coordinator.isBusy
     }
 
     // MARK: - NSMenuDelegate
 
     func menuWillOpen(_ menu: NSMenu) {
-        rebuildMenu(menu)
+        rebuild(menu)
+        // Refresh in the background; the next open shows fresh peer state.
+        Task {
+            await coordinator.refresh()
+            _ = await coordinator.peerState()
+        }
     }
 
-    private func rebuildMenu(_ menu: NSMenu) {
+    private func rebuild(_ menu: NSMenu) {
         menu.removeAllItems()
+        let peerName = coordinator.lastPeer?.name ?? bonjourService.peerName ?? "Other Mac"
+        let peerReachable = bonjourService.peerEndpoint != nil
 
-        let connected = coordinator.isTrackpadConnected
-        let peerOnline = bonjourService.isPeerOnline
-        let peerName = bonjourService.peerName ?? "Other Mac"
-
-        let statusLabel = NSMenuItem(
-            title: "Trackpad: \(connected ? "Connected" : "Disconnected")",
-            action: nil,
-            keyEquivalent: ""
-        )
-        statusLabel.isEnabled = false
-        menu.addItem(statusLabel)
-
-        menu.addItem(.separator())
-
-        let toggleTitle: String
-        if connected {
-            toggleTitle = peerOnline ? "Send to \(peerName)" : "Trackpad is here"
+        let location: String
+        if !settings.isConfigured {
+            location = "No device configured"
+        } else if coordinator.isBusy {
+            location = "Transferring…"
+        } else if coordinator.holdsHere {
+            location = "Connected to this Mac"
+        } else if coordinator.lastPeer?.holds == true {
+            location = "Connected to \(peerName)"
         } else {
-            toggleTitle = peerOnline ? "Take from \(peerName)" : "Connect Here"
+            location = "Not connected"
         }
-        let toggleItem = NSMenuItem(
-            title: toggleTitle,
-            action: #selector(handleToggle),
-            keyEquivalent: ""
-        )
-        toggleItem.target = self
-        // Always allow if MAC is configured: when peer is offline + disconnected, we connect locally
-        toggleItem.isEnabled = !settings.trackpadMAC.isEmpty && !(connected && !peerOnline)
-        menu.addItem(toggleItem)
-
-        if !bluetooth.isAvailable {
-            let warnItem = NSMenuItem(
-                title: "⚠ blueutil not found (brew install blueutil)",
-                action: nil,
-                keyEquivalent: ""
-            )
-            warnItem.isEnabled = false
-            menu.addItem(warnItem)
-        }
+        addLabel(menu, deviceSummary() + ": " + location)
 
         menu.addItem(.separator())
+        let toggleTitle = coordinator.holdsHere ? "Send to \(peerName)" : "Bring Here"
+        let toggle = NSMenuItem(title: toggleTitle, action: #selector(handleToggle), keyEquivalent: "t")
+        toggle.keyEquivalentModifierMask = [.control, .option, .command]
+        toggle.target = self
+        toggle.isEnabled = settings.isConfigured && !coordinator.isBusy && (peerReachable || !coordinator.holdsHere)
+        menu.addItem(toggle)
 
-        let peerStatus = peerOnline ? "● \(peerName)" : "○ Peer: Offline"
-        let peerItem = NSMenuItem(title: peerStatus, action: nil, keyEquivalent: "")
-        peerItem.isEnabled = false
-        menu.addItem(peerItem)
+        let auto = NSMenuItem(title: "Automatic Handoff", action: #selector(toggleAuto), keyEquivalent: "")
+        auto.target = self
+        auto.state = settings.autoHandoff ? .on : .off
+        menu.addItem(auto)
 
         menu.addItem(.separator())
+        addLabel(menu, peerReachable ? "● \(peerName)" : "○ Other Mac: offline")
+        addLabel(menu, "This Mac: \(settings.role == .primary ? "main (orchestrator)" : "secondary")")
+        if !coordinator.lastResult.isEmpty { addLabel(menu, coordinator.lastResult) }
 
+        menu.addItem(.separator())
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
-
-        let quitItem = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        menu.addItem(quitItem)
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
-    private var bluetooth: BluetoothManager { .shared }
+    private func deviceSummary() -> String {
+        guard let first = settings.deviceMACs.first else { return "Trackpad" }
+        let name = settings.displayName(first)
+        return settings.deviceMACs.count > 1 ? "\(name) +\(settings.deviceMACs.count - 1)" : name
+    }
+
+    private func addLabel(_ menu: NSMenu, _ title: String) {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        menu.addItem(item)
+    }
 
     @objc private func handleToggle() {
-        Task { @MainActor in
-            await coordinator.toggle()
-        }
+        Task { await coordinator.toggle() }
+    }
+
+    @objc private func toggleAuto() {
+        settings.autoHandoff.toggle()
     }
 
     @objc private func openSettings() {
@@ -128,7 +123,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             window.title = "Magic Trackpad Connector"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 420, height: 320))
             window.center()
             settingsWindow = window
         }

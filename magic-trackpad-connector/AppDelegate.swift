@@ -1,61 +1,59 @@
 import AppKit
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var peerServer: PeerServer!
     private var bonjourService: BonjourService!
-    private var coordinator: ToggleCoordinator!
+    private var systemEvents: SystemEvents!
+    private var coordinator: HandoffCoordinator!
     private var statusBarController: StatusBarController!
+    private var hotkey: Hotkey!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-
         let settings = AppSettings.shared
-        let bluetooth = BluetoothManager.shared
+        Log.write("App", "launch — role \(settings.role.rawValue), devices \(settings.deviceMACs), auto \(settings.autoHandoff)")
 
-        peerServer = PeerServer(settings: settings, bluetooth: bluetooth)
-        peerServer.start()
+        // Run at login (user can turn it off in System Settings → Login Items).
+        if SMAppService.mainApp.status != .enabled {
+            try? SMAppService.mainApp.register()
+        }
 
+        if !settings.isConfigured { autoDetectDevices(settings) }
+
+        Wire.myName = settings.thisMachineName
         bonjourService = BonjourService(settings: settings)
+        systemEvents = SystemEvents()
+        coordinator = HandoffCoordinator(settings: settings, bonjour: bonjourService, events: systemEvents)
+
+        peerServer = PeerServer(port: settings.serverPort, serviceName: settings.thisMachineName) { [coordinator] request, isLocal in
+            await coordinator!.handle(request, isLocal: isLocal)
+        }
+        peerServer.start()
         bonjourService.start()
+        systemEvents.start()
 
-        coordinator = ToggleCoordinator(
-            settings: settings,
-            bluetooth: bluetooth,
-            bonjourService: bonjourService
-        )
-
-        statusBarController = StatusBarController(
-            settings: settings,
-            bonjourService: bonjourService,
-            coordinator: coordinator
-        )
-
-        peerServer.onReleaseRequested = { [weak coordinator] in
-            Task { @MainActor in coordinator?.enterReleaseMode() }
+        statusBarController = StatusBarController(settings: settings, bonjourService: bonjourService, coordinator: coordinator)
+        hotkey = Hotkey { [coordinator] in
+            Task { await coordinator?.toggle() }
         }
-        peerServer.onClaimRequested = { [weak coordinator] in
-            Task { @MainActor in coordinator?.enterClaimMode() }
-        }
-
-        Task {
-            // Crash recovery: releaseForHandoff turns off incoming Bluetooth
-            // connections during the release window; make sure we never leave
-            // the Mac in that state across a relaunch.
-            let resetConnectable = Task.detached { bluetooth.setConnectable(true) }
-            _ = await resetConnectable.value
-
-            await autoDetectTrackpadIfNeeded(settings: settings, bluetooth: bluetooth)
-            await coordinator.connectOnLaunch()
-            statusBarController.updateIcon()
-        }
+        coordinator.start()
     }
 
-    private func autoDetectTrackpadIfNeeded(settings: AppSettings, bluetooth: BluetoothManager) async {
-        guard !settings.isTrackpadConfigured else { return }
-        let task = Task.detached(priority: .userInitiated) { try bluetooth.findMagicTrackpad() }
-        guard let trackpad = try? await task.value else { return }
-        settings.trackpadMAC = trackpad.mac
-        settings.trackpadName = trackpad.name
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task {
+            await coordinator.prepareForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    /// First run: manage the paired Magic Trackpad by default.
+    private func autoDetectDevices(_ settings: AppSettings) {
+        let devices = BluetoothManager.shared.runSync { BluetoothManager.shared.pairedDevices() }
+        guard let trackpad = devices.first(where: { $0.name.localizedCaseInsensitiveContains("trackpad") }) else { return }
+        settings.deviceMACs = [trackpad.mac]
+        settings.deviceNames[trackpad.mac] = trackpad.name
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
