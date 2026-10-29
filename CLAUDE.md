@@ -80,7 +80,9 @@ from ourselves is treated as unreachable.
 pairs immediately if the sender vanishes or `receive` never comes (shutdown
 kills the app within seconds of the unplug). `status` returns `holds`, `available`
 (awake+unlocked), `idle`, `busy`, `role`. A Mac with no devices configured
-adopts the peer's list.
+adopts the peer's list. Devices move independently: only devices connected
+to the sender are released; `release` answers `released`/`refused`,
+`receive` answers `acquired`/`failed`, and the sender takes back only failures.
 
 **Policy** (top of `HandoffCoordinator.swift`): lock → push if peer unlocked;
 sleep/shutdown → push if peer reachable (shutdown skips the disconnect wait);
