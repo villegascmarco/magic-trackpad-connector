@@ -14,12 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = AppSettings.shared
         Log.write("App", "launch — role \(settings.role.rawValue), devices \(settings.deviceMACs), auto \(settings.autoHandoff)")
 
-        // Run at login (user can turn it off in System Settings → Login Items).
-        if SMAppService.mainApp.status != .enabled {
+        // Open at login by default, once; afterwards Settings → Open at Login decides.
+        if !UserDefaults.standard.bool(forKey: "didRegisterLoginItem") {
             try? SMAppService.mainApp.register()
+            UserDefaults.standard.set(true, forKey: "didRegisterLoginItem")
         }
 
         if !settings.isConfigured { autoDetectDevices(settings) }
+        fillMissingNames(settings)
 
         Wire.myName = settings.thisMachineName
         bonjourService = BonjourService(settings: settings)
@@ -54,6 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let trackpad = devices.first(where: { $0.name.localizedCaseInsensitiveContains("trackpad") }) else { return }
         settings.deviceMACs = [trackpad.mac]
         settings.deviceNames[trackpad.mac] = trackpad.name
+    }
+
+    /// The menu shows device names; older versions could store only the address.
+    private func fillMissingNames(_ settings: AppSettings) {
+        let missing = settings.deviceMACs.filter { (settings.deviceNames[$0] ?? $0) == $0 }
+        guard !missing.isEmpty else { return }
+        let devices = BluetoothManager.shared.runSync { BluetoothManager.shared.pairedDevices() }
+        for device in devices where missing.contains(device.mac) {
+            settings.deviceNames[device.mac] = device.name
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
