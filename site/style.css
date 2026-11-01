@@ -184,6 +184,10 @@ pre.seq { padding: 22px; font-size: 12.5px; line-height: 1.6; color: var(--fg-mu
 .footer-links { display: flex; gap: 20px; }
 .footer-links a:hover { color: var(--fg); }
 .footer-author { color: var(--fg-muted); text-decoration: underline; text-decoration-color: #a3a3a366; text-underline-offset: 3px; }
+.footer-meta {
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px;
+  margin-top: 20px; font: 12px var(--mono); color: var(--fg-dim);
+}
 .footer-author:hover { color: var(--fg); text-decoration-color: var(--fg); }
 
 @media (width <= 1100px) {
