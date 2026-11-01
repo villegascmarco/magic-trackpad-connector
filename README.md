@@ -26,6 +26,14 @@ open it and drag the app to **Applications** — on **both** Macs. The app isn't
 notarized, so the first launch is blocked by Gatekeeper: open
 **System Settings → Privacy & Security** and click **Open Anyway**.
 
+On a Mac managed by your company (MDM), **Open Anyway** may just show the
+warning again. In that case, remove the download quarantine in Terminal and
+open the app normally:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/magic-trackpad-connector.app
+```
+
 ### Build from source
 
 With Xcode 26 or later (if `xcode-select` points at the Command Line Tools,

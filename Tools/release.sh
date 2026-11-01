@@ -66,7 +66,7 @@ echo "==> Draft release v$VERSION"
 if [[ -n "${NOTARY_PROFILE:-}" ]]; then
   OPEN_NOTE="Open the DMG and drag the app to Applications."
 else
-  OPEN_NOTE="Open the DMG and drag the app to Applications. The app isn't notarized, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway**."
+  OPEN_NOTE="Open the DMG and drag the app to Applications. The app isn't notarized, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway**. On a company-managed Mac where that only shows the warning again, run \`xattr -dr com.apple.quarantine /Applications/magic-trackpad-connector.app\` in Terminal."
 fi
 gh release create "v$VERSION" "$DMG" --draft --title "Magic Trackpad Connector $VERSION" \
   --notes "Install on **both** Macs (macOS 26.2 or later). $OPEN_NOTE Then follow the setup steps in the README."
