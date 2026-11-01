@@ -20,22 +20,22 @@ MDM); they only need to be on the same local network.
 
 ## Install
 
-There are no prebuilt releases yet; build it with Xcode 26 or later (if
-`xcode-select` points at the Command Line Tools, first
-`export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`):
+Download the latest `.dmg` from
+[Releases](https://github.com/villegascmarco/magic-trackpad-connector/releases),
+open it and drag the app to **Applications** — on **both** Macs. The app isn't
+notarized, so the first launch is blocked by Gatekeeper: open
+**System Settings → Privacy & Security** and click **Open Anyway**.
+
+### Build from source
+
+With Xcode 26 or later (if `xcode-select` points at the Command Line Tools,
+first `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`):
 
 ```bash
 git clone https://github.com/villegascmarco/magic-trackpad-connector.git
 cd magic-trackpad-connector
-xcodebuild -project magic-trackpad-connector.xcodeproj -scheme magic-trackpad-connector \
-  -configuration Release -derivedDataPath build/dd \
-  CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
-cp -R build/dd/Build/Products/Release/magic-trackpad-connector.app /Applications/
+Tools/release.sh        # → build/release/Magic-Trackpad-Connector-<version>.dmg
 ```
-
-Copy the same app to the other Mac. The build is ad-hoc signed, so the first
-launch on a Mac that didn't build it is blocked by Gatekeeper: open
-**System Settings → Privacy & Security** and click **Open Anyway**.
 
 ## Setup
 

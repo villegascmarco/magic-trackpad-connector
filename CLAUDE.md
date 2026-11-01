@@ -14,7 +14,9 @@ xcodebuild -project magic-trackpad-connector.xcodeproj -scheme magic-trackpad-co
   CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= build
 ```
 
-Ad-hoc signed. Install on both Macs (`/Applications` here, `~/Applications`
+Ad-hoc signed. Release: bump `MARKETING_VERSION`, then `Tools/release.sh --publish`
+(DMG → draft GitHub release; `SIGN_IDENTITY`/`NOTARY_PROFILE` enable
+Developer ID + notarization). Install on both Macs (`/Applications` here, `~/Applications`
 on the MacBook via `rsync … mbp:`); first launch asks for Bluetooth and Local
 Network permission once per Mac.
 
