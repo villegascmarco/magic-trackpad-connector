@@ -107,6 +107,68 @@
   </div>
 </section>
 
+<section class="sec failover" id="failover">
+  <input type="radio" name="fo" id="fo-off" class="fo-radio" checked>
+  <input type="radio" name="fo" id="fo-crash" class="fo-radio">
+  <div class="container two-col">
+    <div>
+      <p class="eyebrow">Failover</p>
+      <h2 class="sec-title display">If a Mac goes away, the trackpad doesn’t.</h2>
+      <p class="sec-sub">The other Mac is always listening. A clean shutdown hands the trackpad over before
+        the power goes; a crash or power loss puts the survivor into recovery mode.</p>
+      <div class="seg" role="tablist">
+        <label for="fo-off">Shut down / sleep</label>
+        <label for="fo-crash">Crash / power loss</label>
+      </div>
+      <ul class="checks sc-off">
+        <li><b>Handed over before power-off.</b> Sleep is held up to 25 s and shutdown skips the
+          disconnect wait, so the release lands while the Mac is still alive.</li>
+        <li><b>Receiver has a watchdog.</b> If Mac A dies right after <code>prepare</code>, Mac B pairs anyway.</li>
+      </ul>
+      <ul class="checks sc-crash">
+        <li><b>The trackpad stays bound to the dead Mac.</b> Every other host gets <code>0x02</code> — that’s the hardware, not the app.</li>
+        <li><b>Mac B keeps paging for 10 minutes.</b> It retries every ~3 s and shows a power-cycle hint in the menu.</li>
+        <li><b>Switch the trackpad off and on.</b> It becomes pairable and Mac B takes it within seconds.</li>
+      </ul>
+    </div>
+    <div class="window">
+      <div class="window-head"><span></span><span></span><span></span>
+        <p class="window-title"><span class="sc-off">failover — clean shutdown</span><span class="sc-crash">failover — crash / power loss</span></p></div>
+        <div class="fo-panel sc-off">
+          <div class="fo-stage">
+            <div class="fo-mac fo-a"><svg><use href="#i-laptop"/></svg><b>Mac A</b><span class="fo-state"><i class="w" style="animation-name:w0-12"><span class="dot on"></span>holding</i><i class="w" style="animation-name:w12-50"><span class="dot warn"></span>shutting down</i><i class="w end" style="animation-name:w50-100"><span class="dot "></span>off</i></span></div>
+            <div class="fo-track"><span class="fo-token"><svg><use href="#i-trackpad"/></svg></span></div>
+            <div class="fo-mac fo-b"><svg><use href="#i-laptop"/></svg><b>Mac B</b><span class="fo-state"><i class="w" style="animation-name:w0-42"><span class="dot "></span>ready</i><i class="w end" style="animation-name:w42-100"><span class="dot on"></span>holding</i></span></div>
+          </div>
+          <div class="fo-log">
+          <div class="w end" style="animation-name:w12-100"><span class="host host-a">A</span><span class="t-sys">[Sys]</span>    power off / logout</div>
+          <div class="w end" style="animation-name:w18-100"><span class="host host-a">A</span><span class="t-pol">[Policy]</span> shutdown: handing devices to Mac B</div>
+          <div class="w end" style="animation-name:w24-100"><span class="host host-a">A</span><span class="t-flow">[Flow]</span>   push(shutdown): releasing</div>
+          <div class="w end" style="animation-name:w42-100"><span class="host host-b">B</span><span class="t-bt">[BT]</span>     pair d0-c0-…-2d -&gt; ok connected=true</div>
+          <div class="w end" style="animation-name:w48-100"><span class="host host-b">B</span><span class="t-state">[State]</span>  devices are here <span class="ok">✓ ~3 s</span></div>
+          </div>
+        </div>
+        <div class="fo-panel sc-crash">
+          <div class="fo-stage">
+            <div class="fo-mac fo-a"><svg><use href="#i-laptop"/></svg><b>Mac A</b><span class="fo-state"><i class="w" style="animation-name:w0-10"><span class="dot on"></span>holding</i><i class="w end" style="animation-name:w10-100"><span class="dot err"></span>no power</i></span></div>
+            <div class="fo-track"><span class="fo-token"><svg><use href="#i-trackpad"/></svg></span></div>
+            <div class="fo-mac fo-b"><svg><use href="#i-laptop"/></svg><b>Mac B</b><span class="fo-state"><i class="w" style="animation-name:w0-18"><span class="dot "></span>ready</i><i class="w" style="animation-name:w18-66"><span class="dot warn pulse"></span>retrying · 0x02</i><i class="w end" style="animation-name:w66-100"><span class="dot on"></span>holding</i></span></div>
+          </div>
+          <div class="fo-log">
+          <div class="w end" style="animation-name:w12-100"><span class="host host-b">B</span><span class="t-net">[Net]</span>    peer lost</div>
+          <div class="w end" style="animation-name:w18-100"><span class="host host-b">B</span><span class="t-pol">[Policy]</span> periodic: peer unreachable — claiming</div>
+          <div class="w end" style="animation-name:w24-100"><span class="host host-b">B</span><span class="t-bt">[BT]</span>     pair d0-c0-…-2d -&gt; <span class="err">refused 0x02</span></div>
+          <div class="w end" style="animation-name:w30-100"><span class="host host-b">B</span><span class="t-pol">[Policy]</span> bound to a Mac that is gone — waiting for a power cycle</div>
+          <div class="w end" style="animation-name:w44-100"><span class="host"></span><span class="you">⏻ you switch the trackpad off and on</span></div>
+          <div class="w end" style="animation-name:w60-100"><span class="host host-b">B</span><span class="t-bt">[BT]</span>     pair d0-c0-…-2d -&gt; ok connected=true</div>
+          <div class="w end" style="animation-name:w66-100"><span class="host host-b">B</span><span class="t-pol">[Policy]</span> recovered the stuck device</div>
+          <div class="w end" style="animation-name:w70-100"><span class="host host-b">B</span><span class="t-state">[State]</span>  devices are here <span class="ok">✓</span></div>
+          </div>
+        </div>
+    </div>
+  </div>
+</section>
+
 <section class="sec" id="how">
   <div class="container two-col">
     <div>
